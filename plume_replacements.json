@@ -1,0 +1,5 @@
+{
+  "_aide": "Corrections personnalisees appliquees a chaque transcription. Format : \"mot mal transcrit\": \"correction\". Insensible a la casse, sur mots entiers. Les cles commencant par _ sont ignorees. Modifiez ce fichier puis relancez une dictee.",
+  "_exemple": "\"discorde\": \"Discord\"  ou  \"git eub\": \"GitHub\"",
+  "discorde": "Discord"
+}

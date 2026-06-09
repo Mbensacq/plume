@@ -18,6 +18,7 @@ Usage :
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -43,6 +44,47 @@ BEAM_SIZE = 5
 
 # Durée minimale d'un enregistrement (en secondes) pour tenter une transcription.
 MIN_RECORD_SECONDS = 0.2
+
+# --- Ponctuation ---
+# Amorce de style : un court texte BIEN ponctué « conditionne » Whisper à
+# produire davantage de virgules, points, points d'interrogation, etc.
+INITIAL_PROMPT = ("Voici une transcription en français, soigneusement ponctuée. "
+                  "Elle contient des virgules, des points, des points "
+                  "d'interrogation ? Et parfois des points d'exclamation !")
+
+# Nettoyage léger en sortie : majuscule en début, point final si absent,
+# espaces autour de la ponctuation corrigés. Mettre False pour le texte brut.
+AUTO_PUNCTUATION = True
+
+# Conditionne chaque segment sur le texte précédent -> ponctuation/contexte plus
+# cohérents. (True = défaut de faster-whisper ; explicite ici.)
+CONDITION_ON_PREVIOUS_TEXT = True
+
+# --- Raccourci clavier global (Windows) ---
+# Démarre/arrête la dictée même quand Plume n'est pas au premier plan.
+# On essaie chaque candidat dans l'ordre ; le PREMIER qui s'enregistre est
+# utilisé (un raccourci peut être déjà pris par une autre application).
+# Modificateurs : 1=ALT, 2=CTRL, 4=SHIFT, 8=WIN ; 0x4000 = NOREPEAT.
+HOTKEY_ENABLED = True
+_NR = 0x4000
+HOTKEY_CANDIDATES = [
+    (0x0002 | 0x0001 | _NR, 0x20, "Ctrl + Alt + Espace"),
+    (0x0002 | 0x0004 | _NR, 0x20, "Ctrl + Maj + Espace"),
+    (0x0002 | 0x0001 | _NR, 0x44, "Ctrl + Alt + D"),
+    (0x0002 | 0x0001 | _NR, 0x4A, "Ctrl + Alt + J"),
+    (0x0002 | 0x0001 | _NR, 0x78, "Ctrl + Alt + F9"),
+]
+
+# --- Sortie après transcription ---
+# "manual" : rien (clic « Copier »). "copy" : copie automatique.
+# "type"   : insertion directe (tape le texte dans la fenêtre active).
+DEFAULT_OUTPUT_MODE = "manual"
+
+# --- Corrections personnalisées ---
+# Fichier éditable (JSON) : { "mal transcrit": "correction", ... }.
+# Insensible à la casse, sur mots entiers. Les clés commençant par "_" sont ignorées.
+REPLACEMENTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "plume_replacements.json")
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +186,65 @@ def load_model(prefer_gpu=True):
                   f"         Cause : {e}", file=sys.stderr)
     model = _try_load(CPU_DEVICE, CPU_COMPUTE_TYPE)
     return model, "CPU"
+
+
+def load_replacements():
+    """Charge le dictionnaire de corrections personnalisées (si présent).
+    Ignore les clés commençant par « _ » (commentaires/exemples)."""
+    try:
+        with open(REPLACEMENTS_PATH, "r", encoding="utf-8-sig") as f:
+            raw = json.load(f)
+        return {k: v for k, v in raw.items()
+                if isinstance(k, str) and not k.startswith("_")
+                and isinstance(v, str)}
+    except Exception:
+        return {}
+
+
+def apply_replacements(text, repl):
+    """Applique les corrections (mots entiers, insensible à la casse)."""
+    for wrong, right in repl.items():
+        text = re.sub(r"\b" + re.escape(wrong) + r"\b", right, text,
+                      flags=re.IGNORECASE)
+    return text
+
+
+def transcribe_audio(model, audio):
+    """Transcrit un buffer (np.float32 16 kHz mono) en texte ponctué.
+    Centralise les options qui favorisent la ponctuation + les corrections."""
+    segments, _info = model.transcribe(
+        audio,
+        language=LANGUAGE,
+        beam_size=BEAM_SIZE,
+        vad_filter=VAD_FILTER,
+        initial_prompt=INITIAL_PROMPT or None,
+        condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
+    )
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    text = apply_replacements(text, load_replacements())
+    return postprocess_text(text)
+
+
+def postprocess_text(text):
+    """Nettoyage TRÈS léger : on préserve la ponctuation de Whisper (déjà
+    correcte, espace fine à la française avant « ? ! ; : » incluse) et on se
+    contente de corriger la forme. N'invente AUCUNE virgule."""
+    if not text:
+        return ""
+    if not AUTO_PUNCTUATION:
+        return text
+    s = re.sub(r"\s+", " ", text).strip()
+    # espace parasite avant virgule/point uniquement (en FR, on garde l'espace
+    # avant ? ! ; : que Whisper produit déjà correctement)
+    s = re.sub(r"\s+([,.])", r"\1", s)
+    if not s:
+        return ""
+    # majuscule initiale
+    s = s[0].upper() + s[1:]
+    # point final si la phrase se termine par une lettre/chiffre (pas de doublon)
+    if s[-1] not in ".!?…\"»)":
+        s += "."
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +486,138 @@ def _round_rect(canvas, x1, y1, x2, y2, r, **kw):
         x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
     ]
     return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+def type_text(text):
+    """Tape `text` (Unicode) dans la fenêtre ayant le focus clavier, via
+    SendInput. Sert à l'« insertion directe » (ex. écrire dans Discord).
+
+    IMPORTANT : la structure INPUT doit avoir la MÊME taille que la structure
+    Win32 (union complète mi/ki/hi). Sinon SendInput échoue silencieusement
+    (cbSize invalide) et rien n'est tapé."""
+    if sys.platform != "win32" or not text:
+        return
+    import ctypes
+    from ctypes import wintypes
+    # Évite d'envoyer Entrée (qui enverrait le message Discord par accident).
+    text = text.replace("\r", " ").replace("\n", " ")
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    ULONG_PTR = wintypes.WPARAM            # entier de la taille d'un pointeur
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ULONG_PTR)]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+    user32.SendInput.restype = wintypes.UINT
+
+    events = []
+    for ch in text:
+        code = ord(ch)
+        if code > 0xFFFF:      # hors BMP : ignoré (rare en dictée)
+            continue
+        for up in (0, KEYEVENTF_KEYUP):
+            inp = INPUT()
+            inp.type = INPUT_KEYBOARD
+            inp.u.ki = KEYBDINPUT(0, code, KEYEVENTF_UNICODE | up, 0, 0)
+            events.append(inp)
+    if not events:
+        return
+    n = len(events)
+    arr = (INPUT * n)(*events)
+    sent = user32.SendInput(n, arr, ctypes.sizeof(INPUT))
+    if sent != n:
+        err = ctypes.get_last_error()
+        print(f"[Plume] insertion directe : SendInput {sent}/{n} (err {err})",
+              file=sys.stderr)
+
+
+# --- Contrôle segmenté (choix multi-options) --------------------------------
+class SegmentedToggle(tk.Canvas):
+    def __init__(self, parent, options, on_change, width, height, font, scale=1.0):
+        super().__init__(parent, width=width, height=height,
+                         highlightthickness=0, bd=0)
+        self.options = options          # [(clé, libellé), ...]
+        self.on_change = on_change
+        self.cw, self.ch = width, height
+        self.font = font
+        self.scale = scale
+        self.theme = None
+        self.current = options[0][0]
+        self._enabled = True
+        self.bind("<Button-1>", self._click)
+        self.bind("<Motion>", self._motion)
+
+    def set_theme(self, theme, page_bg):
+        self.theme = theme
+        self.configure(bg=page_bg)
+        self._redraw()
+
+    def set_current(self, key):
+        self.current = key
+        self._redraw()
+
+    def set_enabled(self, on):
+        self._enabled = on
+        self._redraw()
+
+    def _seg(self, i):
+        w = self.cw / len(self.options)
+        return i * w, 0, (i + 1) * w, self.ch
+
+    def _redraw(self):
+        if self.theme is None:
+            return
+        self.delete("all")
+        t = self.theme
+        _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
+                    fill=t["elevated"], outline=t["border"])
+        pad = max(2, int(2 * self.scale))
+        for i, (key, label) in enumerate(self.options):
+            x1, y1, x2, y2 = self._seg(i)
+            if key == self.current:
+                fill = t["accent"] if self._enabled else t["border"]
+                _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
+                            (self.ch - 2 * pad) / 2, fill=fill, outline=fill)
+                fg = t["on_accent"] if self._enabled else t["muted"]
+            else:
+                fg = t["muted"]
+            self.create_text((x1 + x2) / 2, self.ch / 2, text=label,
+                             fill=fg, font=self.font)
+
+    def _click(self, e):
+        if not self._enabled:
+            return
+        i = max(0, min(len(self.options) - 1, int(e.x // (self.cw / len(self.options)))))
+        key = self.options[i][0]
+        if key != self.current:
+            self.current = key
+            self._redraw()
+            if self.on_change:
+                self.on_change(key)
+
+    def _motion(self, _e):
+        self.configure(cursor="hand2" if self._enabled else "")
 
 
 # --- Bouton arrondi réutilisable -------------------------------------------
@@ -651,6 +884,17 @@ class PlumeApp:
         self.backend = None
         self.recording = False
         self.text_revealed = False
+        self._record_start = 0.0
+
+        # Mode de sortie mémorisé (manual / copy / type)
+        self.output_mode = cfg.get("output_mode", DEFAULT_OUTPUT_MODE)
+        if self.output_mode not in ("manual", "copy", "type"):
+            self.output_mode = DEFAULT_OUTPUT_MODE
+
+        # Raccourci clavier global
+        self._hotkey_thread = None
+        self._hotkey_thread_id = None
+        self.active_hotkey_label = None
 
         # Polices (tailles en points -> mises à l'échelle par tk scaling).
         self.f_title = ("Segoe UI", 15, "bold")
@@ -661,11 +905,11 @@ class PlumeApp:
 
         root.title("  Plume")
         root.resizable(False, False)
-        self._compact_geom = f"{self.px(360)}x{self.px(252)}"
-        self._expanded_geom = f"{self.px(360)}x{self.px(514)}"
+        self._compact_geom = f"{self.px(360)}x{self.px(296)}"
+        self._expanded_geom = f"{self.px(360)}x{self.px(556)}"
         root.geometry(self._compact_geom)
         try:
-            root.minsize(self.px(360), self.px(252))
+            root.minsize(self.px(360), self.px(296))
         except Exception:
             pass
 
@@ -677,6 +921,7 @@ class PlumeApp:
         self.root.after(100, self._pump_queue)
         threading.Thread(target=self._load_model_worker, daemon=True).start()
         threading.Thread(target=self._enumerate_worker, daemon=True).start()
+        self._start_hotkey()
 
     def px(self, n):
         return int(round(n * self.scale))
@@ -711,6 +956,17 @@ class PlumeApp:
         self.sources_btn.pack(pady=(self.px(8), 0))
         self.sources_btn.set_enabled(False)  # activé après énumération des périphériques
 
+        # Mode de sortie : manuel / auto-copie / insertion directe
+        self.output_sel = SegmentedToggle(
+            self.container,
+            options=[("manual", "Manuel"), ("copy", "Auto-copie"), ("type", "Insérer")],
+            on_change=self._on_output_change,
+            width=self.px(252), height=self.px(32),
+            font=self.f_seg, scale=self.scale,
+        )
+        self.output_sel.pack(pady=(self.px(6), 0))
+        self.output_sel.set_current(self.output_mode)
+
         # Barre d'état
         self.status_var = tk.StringVar(value="Chargement du modèle…")
         self.status_lbl = tk.Label(self.container, textvariable=self.status_var,
@@ -723,11 +979,19 @@ class PlumeApp:
                             bd=0, relief="flat", highlightthickness=1,
                             padx=self.px(12), pady=self.px(10), height=8)
         self.text.pack(fill="both", expand=True, padx=pad, pady=(0, self.px(10)))
-        self.copy_btn = RoundedButton(self.text_frame, "Copier", self._on_copy,
-                                      width=self.px(130), height=self.px(40),
+        # Ligne de boutons : Effacer (ghost) + Copier (accent)
+        self.btn_row = tk.Frame(self.text_frame)
+        self.btn_row.pack(fill="x", padx=pad, pady=(0, self.px(14)))
+        self.clear_btn = RoundedButton(self.btn_row, "Effacer", self._on_clear,
+                                       width=self.px(120), height=self.px(40),
+                                       radius=self.px(12), font=self.f_btn,
+                                       kind="ghost", scale=self.scale)
+        self.clear_btn.pack(side="left")
+        self.copy_btn = RoundedButton(self.btn_row, "Copier", self._on_copy,
+                                      width=self.px(120), height=self.px(40),
                                       radius=self.px(12), font=self.f_btn,
                                       kind="accent", scale=self.scale)
-        self.copy_btn.pack(pady=(0, self.px(14)))
+        self.copy_btn.pack(side="right")
 
     # ----- Thèmes -----
     def apply_theme(self, name, persist=True):
@@ -740,6 +1004,7 @@ class PlumeApp:
         self.mic_area.configure(bg=t["bg"])
         self.status_lbl.configure(bg=t["bg"], fg=t["muted"])
         self.text_frame.configure(bg=t["bg"])
+        self.btn_row.configure(bg=t["bg"])
         self.text.configure(bg=t["surface"], fg=t["text"],
                             insertbackground=t["accent"],
                             selectbackground=t["accent"],
@@ -749,6 +1014,8 @@ class PlumeApp:
         self.dots.render(name, t["bg"])
         self.mic_btn.set_theme(t, t["bg"])
         self.sources_btn.set_theme(t, t["bg"])
+        self.output_sel.set_theme(t, t["bg"])
+        self.clear_btn.set_theme(t, t["bg"])
         self.copy_btn.set_theme(t, t["bg"])
         _set_titlebar_dark(self.root, t.get("dark_titlebar", False))
         if self._sources_dialog is not None:
@@ -759,12 +1026,35 @@ class PlumeApp:
     def _save_prefs(self):
         save_config({
             "theme": self.theme_name,
+            "output_mode": self.output_mode,
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
                         for s in self.selected_sources],
         })
 
     def _ready_status(self):
-        return f"Prêt — {self.backend}  ·  {self._source_summary()}"
+        s = f"Prêt — {self.backend}"
+        if self.active_hotkey_label:
+            s += f"  ·  ⌨ {self.active_hotkey_label}"
+        return s
+
+    def _on_output_change(self, key):
+        self.output_mode = key
+        self._save_prefs()
+        msg = {"manual": "Sortie : manuelle (bouton Copier)",
+               "copy": "Sortie : copie automatique",
+               "type": "Sortie : insertion directe dans la fenêtre active"}.get(key, "")
+        self.status_var.set(msg)
+
+    def _emit_output(self, new_text):
+        """Applique le mode de sortie après une transcription."""
+        if self.output_mode == "copy":
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.text.get("1.0", "end-1c"))
+        elif self.output_mode == "type":
+            try:
+                type_text(new_text + " ")
+            except Exception as e:
+                print(f"[Plume] insertion directe : {e}", file=sys.stderr)
 
     # ----- Sources audio -----
     def _source_summary(self, maxlen=30):
@@ -841,11 +1131,7 @@ class PlumeApp:
             if audio is None or audio.size < int(MIN_RECORD_SECONDS * SAMPLE_RATE):
                 self.q.put(("empty", None))
                 return
-            segments, _info = self.model.transcribe(
-                audio, language=LANGUAGE, beam_size=BEAM_SIZE,
-                vad_filter=VAD_FILTER,
-            )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
+            text = transcribe_audio(self.model, audio)
             if not text:
                 self.q.put(("empty", None))
             else:
@@ -869,8 +1155,18 @@ class PlumeApp:
                       and not self.recording)
         self.mic_btn.set_enabled(can_record)
         self.sources_btn.set_enabled(self.devices_loaded and not self.recording)
+        self.output_sel.set_enabled(not self.recording)
 
     def _handle(self, kind, payload):
+        if kind == "hotkey":
+            if self.recording or (self.model is not None and self.selected_sources):
+                self._on_mic()
+            return
+        if kind == "hotkey_status":
+            self.active_hotkey_label = payload
+            if self.model is not None and not self.recording:
+                self.status_var.set(self._ready_status())
+            return
         if kind == "devices":
             self.devices = payload
             self.devices_loaded = True
@@ -898,6 +1194,7 @@ class PlumeApp:
         elif kind == "result":
             self._append_text(payload)
             self._reveal_text_area()
+            self._emit_output(payload)
             self._update_idle_controls()
             self.status_var.set(self._ready_status())
         elif kind == "empty":
@@ -923,7 +1220,9 @@ class PlumeApp:
             self.recording = True
             self.mic_btn.set_recording(True)
             self.sources_btn.set_enabled(False)
-            self.status_var.set(f"Enregistrement… ({self._source_summary(22)})")
+            self.output_sel.set_enabled(False)
+            self._record_start = time.monotonic()
+            self._tick_timer()
         else:
             self.recording = False
             audio = self.recorder.stop()
@@ -945,6 +1244,64 @@ class PlumeApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self.status_var.set("Copié dans le presse-papiers ✓")
+
+    def _on_clear(self):
+        self.text.delete("1.0", "end")
+        self.status_var.set("Texte effacé.")
+
+    def _tick_timer(self):
+        """Affiche la durée d'enregistrement (mise à jour chaque 0,5 s)."""
+        if not self.recording:
+            return
+        el = int(time.monotonic() - self._record_start)
+        self.status_var.set(
+            f"● Enregistrement… ({self._source_summary(18)})  {el // 60}:{el % 60:02d}")
+        self.root.after(500, self._tick_timer)
+
+    # ----- Raccourci clavier global (Windows) -----
+    def _start_hotkey(self):
+        if not (HOTKEY_ENABLED and sys.platform == "win32"):
+            return
+        self._hotkey_thread = threading.Thread(target=self._hotkey_loop, daemon=True)
+        self._hotkey_thread.start()
+
+    def _hotkey_loop(self):
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        self._hotkey_thread_id = kernel32.GetCurrentThreadId()
+        registered = None
+        for mods, vk, label in HOTKEY_CANDIDATES:
+            if user32.RegisterHotKey(None, 1, mods, vk):
+                registered = label
+                break
+        if not registered:
+            print("[Plume] Aucun raccourci global disponible (tous pris ?).",
+                  file=sys.stderr)
+            self.q.put(("hotkey_status", None))
+            return
+        self.q.put(("hotkey_status", registered))
+        print(f"[Plume] Raccourci global actif : {registered}", file=sys.stderr)
+        try:
+            msg = wintypes.MSG()
+            while True:
+                ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret in (0, -1):       # WM_QUIT ou erreur
+                    break
+                if msg.message == 0x0312:   # WM_HOTKEY
+                    self.q.put(("hotkey", None))
+        finally:
+            user32.UnregisterHotKey(None, 1)
+
+    def _stop_hotkey(self):
+        if self._hotkey_thread_id:
+            try:
+                import ctypes
+                ctypes.windll.user32.PostThreadMessageW(
+                    self._hotkey_thread_id, 0x0012, 0, 0)  # WM_QUIT
+            except Exception:
+                pass
 
     def _append_text(self, new):
         """Mode ajout : ajoute le nouveau texte à la suite (séparé par une espace)."""
@@ -1090,6 +1447,10 @@ class PlumeApp:
             dlg.destroy()
 
     def on_close(self):
+        try:
+            self._stop_hotkey()
+        except Exception:
+            pass
         try:
             self.recorder.close()
         except Exception:

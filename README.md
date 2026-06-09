@@ -104,6 +104,56 @@ si vous branchez/débranchez un périphérique.
 >   continuez d'entendre normalement.
 > - Tout est ramené en **16 kHz mono** (format de Whisper) automatiquement.
 
+### Mode de sortie (Manuel / Auto-copie / Insérer)
+
+Sous le bouton, un sélecteur choisit ce qui se passe **après** chaque transcription :
+
+- **Manuel** — rien d'automatique ; vous cliquez **Copier** quand vous voulez.
+- **Auto-copie** — le texte complet est **copié automatiquement** dans le presse-papiers.
+- **Insérer** — le nouveau texte est **tapé directement** dans la fenêtre active
+  (ex. le champ de message Discord), comme si vous l'écriviez au clavier.
+
+> L'« Insérer » est surtout pensé pour le **raccourci global** : vous restez dans
+> Discord, vous dictez, et le texte s'écrit dans Discord. Si vous déclenchez depuis la
+> fenêtre de Plume (qui a alors le focus), le texte irait dans Plume.
+
+### Raccourci clavier global
+
+Vous pouvez **démarrer/arrêter la dictée sans cliquer la fenêtre** (même quand Plume
+est en arrière-plan). Plume essaie plusieurs combinaisons et active la **première
+disponible** ; le raccourci actif est affiché dans la barre d'état (`⌨ …`).
+
+Ordre essayé : `Ctrl+Alt+Espace`, `Ctrl+Maj+Espace`, `Ctrl+Alt+D`, `Ctrl+Alt+J`,
+`Ctrl+Alt+F9`. Modifiable via `HOTKEY_CANDIDATES` en haut de `plume.py`
+(`HOTKEY_ENABLED = False` pour le désactiver).
+
+> Workflow type pour Discord : mode **Insérer** + raccourci global → placez le curseur
+> dans le champ de message, pressez le raccourci, parlez, re-pressez : le texte
+> s'écrit dans Discord.
+
+### Effacer & minuterie
+
+- Bouton **Effacer** (à côté de Copier) : vide la zone de texte.
+- Pendant l'enregistrement, la barre d'état affiche un **compteur de durée**
+  (`● Enregistrement… (source)  0:07`).
+
+### Corrections personnalisées
+
+Le fichier **`plume_replacements.json`** (à côté de `plume.py`) corrige automatiquement
+des mots récurrents mal transcrits — utile pour les **pseudos, le jargon, les noms
+propres**. Format :
+
+```json
+{
+  "discorde": "Discord",
+  "git eub": "GitHub",
+  "mon pseudo mal entendu": "MonPseudo"
+}
+```
+
+Insensible à la casse, sur mots entiers. Les clés commençant par `_` sont ignorées
+(pour vos commentaires). Les modifications sont prises en compte à la dictée suivante.
+
 ### Thèmes & apparence
 
 - Trois thèmes via les **3 pastilles colorées** en haut à droite : **Sombre** (indigo),
@@ -162,6 +212,20 @@ Sur **RTX 4090**, `large-v3` tourne **plus vite que le temps réel** : gardez-le
 
 Autres constantes utiles : `BEAM_SIZE` (qualité du décodage), `VAD_FILTER`
 (filtrage des silences, activé si `onnxruntime` est présent).
+
+**Ponctuation** (en haut de `plume.py`) :
+
+- `INITIAL_PROMPT` — court texte bien ponctué qui « conditionne » Whisper à mettre
+  davantage de virgules/points/points d'interrogation. Modifiable.
+- `AUTO_PUNCTUATION` — nettoyage léger en sortie : majuscule initiale, **point final
+  si absent**, espaces corrigés (la ponctuation à la française, ex. « mot ? », est
+  préservée). Mettre `False` pour le texte brut du modèle.
+- `CONDITION_ON_PREVIOUS_TEXT` — cohérence de ponctuation entre segments.
+
+> La ponctuation reste **inférée par le modèle** d'après l'intonation et les pauses :
+> parler en marquant les fins de phrases améliore le résultat. Pour une restauration
+> de ponctuation plus poussée, il faudrait un modèle dédié (lourd) — non inclus pour
+> rester léger.
 
 ---
 
@@ -240,6 +304,7 @@ Dans tous les cas, **le repli CPU reste fonctionnel** : l'application ne plante 
 | `requirements.txt` | Dépendances Python (cœur + GPU). |
 | `Plume.vbs` | Lanceur double-clic sans console. |
 | `lancer.bat` | Lanceur batch sans console. |
-| `plume_config.json` | Préférences (thème + sources). Créé automatiquement ; suppressible sans risque. |
+| `plume_config.json` | Préférences (thème, sources, mode de sortie). Créé automatiquement ; suppressible sans risque. |
+| `plume_replacements.json` | Corrections personnalisées (pseudos, jargon). Éditable. |
 | `README.md` | Ce fichier. |
 | `.venv\` | Environnement virtuel (créé à l'installation). |
