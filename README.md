@@ -10,6 +10,8 @@ clic (pratique pour Discord, etc.).
 - **Interface** : `tkinter` (standard), 3 thèmes, rendu DPI-aware, sélecteur de périphériques
 - **Modèle par défaut** : `large-v3`, GPU NVIDIA (CUDA/float16) avec **repli CPU (int8) automatique**
 
+> projet). Tests : `.venv\Scripts\python test_plume.py`.
+
 ---
 
 ## 1. Prérequis
@@ -304,7 +306,9 @@ Dans tous les cas, **le repli CPU reste fonctionnel** : l'application ne plante 
 | `requirements.txt` | Dépendances Python (cœur + GPU). |
 | `Plume.vbs` | Lanceur double-clic sans console. |
 | `lancer.bat` | Lanceur batch sans console. |
-| `plume_config.json` | Préférences (thème, sources, mode de sortie). Créé automatiquement ; suppressible sans risque. |
+| `plume_config.json` | Préférences (thème, sources, mode de sortie). Créé automatiquement ; non versionné ; suppressible sans risque. |
 | `plume_replacements.json` | Corrections personnalisées (pseudos, jargon). Éditable. |
-| `README.md` | Ce fichier. |
+| `test_plume.py` | Tests unitaires des fonctions pures (ponctuation, corrections). |
+| `README.md` | Ce fichier (utilisateur). |
+| `.gitignore` | Exclut `.venv/`, caches, `plume_config.json`, artefacts. |
 | `.venv\` | Environnement virtuel (créé à l'installation). |

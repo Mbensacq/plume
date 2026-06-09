@@ -1,0 +1,21 @@
+# --- Environnement Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Préférences locales (spécifiques à la machine / l'utilisateur) ---
+# Contient le thème, le mode de sortie et les ID de périphériques audio (GUID),
+# qui n'ont de sens que sur la machine où ils ont été créés.
+plume_config.json
+
+# --- Artefacts temporaires (captures, scripts de test jetables, logs) ---
+preview_*.png
+_*.py
+*.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
