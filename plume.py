@@ -68,8 +68,8 @@ CONDITION_ON_PREVIOUS_TEXT = True
 HOTKEY_ENABLED = True
 _NR = 0x4000
 HOTKEY_CANDIDATES = [
-    (0x0002 | 0x0001 | _NR, 0x20, "Ctrl + Alt + Espace"),
-    (0x0002 | 0x0004 | _NR, 0x20, "Ctrl + Maj + Espace"),
+    (0x0002 | 0x0001 | _NR, 0x20, "Ctrl + Maj + Espace"),
+    (0x0002 | 0x0004 | _NR, 0x20, "Ctrl + Alt + Espace"),
     (0x0002 | 0x0001 | _NR, 0x44, "Ctrl + Alt + D"),
     (0x0002 | 0x0001 | _NR, 0x4A, "Ctrl + Alt + J"),
     (0x0002 | 0x0001 | _NR, 0x78, "Ctrl + Alt + F9"),
