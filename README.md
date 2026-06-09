@@ -1,4 +1,4 @@
-# Dictée — reconnaissance vocale locale (français)
+# Plume — reconnaissance vocale locale (français)
 
 Application de dictée vocale **100 % locale et hors ligne** (après installation).
 Vous parlez au micro **— ou vous transcrivez le son joué par le PC —** et le texte
