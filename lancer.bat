@@ -1,4 +1,4 @@
 @echo off
-rem Lanceur de l'application de dictee (ferme la console immediatement).
+rem Lanceur de Plume (ferme la console immediatement).
 cd /d "%~dp0"
-start "" ".venv\Scripts\pythonw.exe" "dictee.py"
+start "" ".venv\Scripts\pythonw.exe" "plume.py"

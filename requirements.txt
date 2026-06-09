@@ -1,4 +1,4 @@
-# Application de dictée vocale locale — dépendances
+# Plume — dictée vocale locale — dépendances
 # Python 3.10+ (testé sur 3.13.13, Windows 11). Voir README.md.
 #
 #   python -m venv .venv
@@ -6,9 +6,8 @@
 
 # --- Cœur ---
 faster-whisper==1.2.1      # moteur Whisper ; tire ctranslate2, onnxruntime, tokenizers, av...
-sounddevice==0.5.5         # capture micro (PortAudio)
-soundcard==0.4.6           # capture du son système (loopback WASAPI, Windows)
-numpy==2.4.6               # traitement des buffers audio
+soundcard==0.4.6           # capture audio : micros ET sorties (loopback WASAPI, Windows)
+numpy==2.4.6               # traitement / mixage des buffers audio
 
 # --- Accélération GPU : CUDA 12 + cuDNN 9 pour CTranslate2 ---
 # Nécessaires pour device="cuda". Volumineux (~1,3 Go). Sans eux, ou en cas

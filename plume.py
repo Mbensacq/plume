@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Dictée vocale locale (speech-to-text) — 100 % hors ligne.
+Plume — dictée vocale locale (speech-to-text), 100 % hors ligne.
 
-Pile : faster-whisper (CTranslate2) + sounddevice (PortAudio) + numpy + tkinter.
+Pile : faster-whisper (CTranslate2) + soundcard (WASAPI) + numpy + tkinter.
 Cible : Windows 11, NVIDIA RTX 4090 (CUDA 12 / cuDNN 9), repli CPU automatique.
 
 Interface : rendu net (DPI-aware), 3 thèmes (Sombre / Clair / Océan), bouton
-micro circulaire et boutons arrondis dessinés sur Canvas. Le thème est mémorisé.
+circulaire et boutons arrondis dessinés sur Canvas. Thème et sources mémorisés.
+
+Capture : micro(s) et/ou son du PC (loopback), au choix, plusieurs sources
+mixables simultanément, via un sélecteur de périphériques.
 
 Usage :
-    python dictee.py             # lance l'interface graphique
-    python dictee.py --selftest  # auto-test : charge le modèle, transcrit un
-                                 #   buffer synthétique, affiche le backend, sort.
+    python plume.py             # lance l'interface graphique
+    python plume.py --selftest  # auto-test : charge le modèle, transcrit un
+                                #   buffer synthétique, affiche le backend, sort.
 """
 
 import os
@@ -95,14 +98,14 @@ def _vad_available():
 VAD_FILTER = _vad_available()
 
 
-def _system_audio_available():
-    """Capture du son système (loopback WASAPI) via la bibliothèque 'soundcard'.
-    Disponible uniquement sous Windows et si le paquet est installé."""
+def _capture_available():
+    """La capture audio (micros et son système) repose sur 'soundcard'
+    (loopback WASAPI). Disponible sous Windows si le paquet est installé."""
     return (sys.platform == "win32"
             and importlib.util.find_spec("soundcard") is not None)
 
 
-SYSTEM_AUDIO_AVAILABLE = _system_audio_available()
+CAPTURE_AVAILABLE = _capture_available()
 
 
 # ---------------------------------------------------------------------------
@@ -137,150 +140,147 @@ def load_model(prefer_gpu=True):
             model = _try_load(GPU_DEVICE, GPU_COMPUTE_TYPE)
             return model, "GPU (CUDA)"
         except Exception as e:
-            print("[Dictée] Chargement CUDA échoué -> repli CPU.\n"
+            print("[Plume] Chargement CUDA échoué -> repli CPU.\n"
                   f"         Cause : {e}", file=sys.stderr)
     model = _try_load(CPU_DEVICE, CPU_COMPUTE_TYPE)
     return model, "CPU"
 
 
 # ---------------------------------------------------------------------------
-# Capture audio (sounddevice / PortAudio)
+# Capture audio (soundcard / WASAPI) — micros et sorties (loopback)
 # ---------------------------------------------------------------------------
-class Recorder:
-    """Capture audio en 16 kHz mono float32.
+def enumerate_devices():
+    """Énumère les périphériques de capture via soundcard.
 
-    Deux sources possibles :
-      - "mic"    : microphone via sounddevice (PortAudio), callback non bloquant.
-      - "system" : son système (loopback WASAPI) via soundcard, dans un thread
-                   dédié (record() bloquant + CoInitialize COM requis).
+    À appeler depuis un THREAD dédié (jamais le thread Tk) : COM doit être
+    initialisé sur ce thread. Retourne un dict :
+        {"inputs": [...], "outputs": [...], "default_mic_id": str|None}
+    où chaque entrée est {"id", "name", "loopback"}.
+    Les "inputs" sont les micros/entrées ; les "outputs" sont les sorties
+    captées en loopback (le « son du PC »)."""
+    import soundcard as sc
+    inputs, outputs = [], []
+    default_mic_id = None
+    try:
+        default_mic_id = sc.default_microphone().id
+    except Exception:
+        pass
+    for m in sc.all_microphones(include_loopback=True):
+        entry = {"id": m.id, "name": m.name, "loopback": bool(m.isloopback)}
+        (outputs if m.isloopback else inputs).append(entry)
+    return {"inputs": inputs, "outputs": outputs, "default_mic_id": default_mic_id}
+
+
+class Recorder:
+    """Capture audio en 16 kHz mono float32 depuis UNE OU PLUSIEURS sources
+    (micros et/ou sorties en loopback), via soundcard.
+
+    Chaque source est capturée dans son propre thread (record() bloquant +
+    CoInitialize COM requis). À l'arrêt, les sources sont mélangées (mix) :
+    alignées au début, complétées par des zéros à la longueur max, sommées,
+    puis normalisées pour éviter la saturation.
+
+    Une source est un dict {"id": str, "name": str, "loopback": bool}.
     """
 
-    def __init__(self, samplerate=SAMPLE_RATE, source="mic"):
+    def __init__(self, samplerate=SAMPLE_RATE):
         self.samplerate = samplerate
-        self.source = source
-        self._frames = []
+        self.sources = []
         self._lock = threading.Lock()
-        # micro (sounddevice)
-        self._stream = None
-        # système (soundcard)
-        self._sys_thread = None
-        self._sys_running = False
-        self._sys_error = None
-        self._sys_spk_name = None
+        self._buffers = {}      # index source -> liste de np.ndarray
+        self._threads = []
+        self._running = False
+        self._errors = []
 
-    def set_source(self, source):
-        self.source = source
-        self._sys_error = None
+    def set_sources(self, sources):
+        self.sources = list(sources)
 
-    def consume_error(self):
-        """Retourne la dernière erreur de capture système (et la remet à zéro)."""
-        err, self._sys_error = self._sys_error, None
-        return err
+    def consume_errors(self):
+        with self._lock:
+            errs = self._errors
+            self._errors = []
+        return errs
 
     # ----- démarrage -----
     def start(self):
-        """Démarre la capture selon la source. Lève si la source est indisponible."""
+        """Démarre la capture de toutes les sources sélectionnées."""
+        if not self.sources:
+            raise RuntimeError("aucune source sélectionnée")
         with self._lock:
-            self._frames = []
-        if self.source == "system":
-            self._start_system()
-        else:
-            self._start_mic()
+            self._buffers = {i: [] for i in range(len(self.sources))}
+            self._errors = []
+        self._running = True
+        self._threads = []
+        for i, src in enumerate(self.sources):
+            t = threading.Thread(target=self._capture_one, args=(i, src),
+                                 daemon=True)
+            t.start()
+            self._threads.append(t)
 
-    def _start_mic(self):
-        import sounddevice as sd  # import tardif : évite de toucher PortAudio en --selftest
-        self._stream = sd.InputStream(
-            samplerate=self.samplerate, channels=1, dtype="float32",
-            callback=self._mic_callback,
-        )
-        self._stream.start()
-
-    def _mic_callback(self, indata, frames, time_info, status):
-        if status:
-            print(f"[audio] {status}", file=sys.stderr)
-        # indata : (frames, 1) ; copie obligatoire (le buffer est réutilisé).
-        with self._lock:
-            self._frames.append(indata.copy())
-
-    def _start_system(self):
-        import soundcard as sc  # peut lever ImportError si non installé
-        spk = sc.default_speaker()
-        if spk is None:
-            raise RuntimeError("aucun périphérique de sortie détecté")
-        self._sys_spk_name = spk.name
-        self._sys_error = None
-        self._sys_running = True
-        self._sys_thread = threading.Thread(target=self._system_loop, daemon=True)
-        self._sys_thread.start()
-        # Laisser le thread tenter l'ouverture et remonter une erreur immédiate.
-        time.sleep(0.15)
-        if self._sys_error is not None:
-            self._sys_running = False
-            raise RuntimeError(self._sys_error)
-
-    def _system_loop(self):
+    def _capture_one(self, i, src):
         try:
             import ctypes
-            ctypes.windll.ole32.CoInitialize(None)  # COM requis dans ce thread
+            ctypes.windll.ole32.CoInitialize(None)  # COM requis sur ce thread
         except Exception:
             pass
         try:
             import soundcard as sc
-            mic = sc.get_microphone(self._sys_spk_name, include_loopback=True)
+            mic = sc.get_microphone(src["id"],
+                                    include_loopback=bool(src.get("loopback")))
             with mic.recorder(samplerate=self.samplerate, channels=1,
                               blocksize=1024) as rec:
-                while self._sys_running:
+                while self._running:
                     data = rec.record(numframes=1600)  # ~0,1 s ; zéros si silence
+                    arr = np.asarray(data, dtype=np.float32).reshape(-1)
                     with self._lock:
-                        self._frames.append(np.asarray(data, dtype=np.float32))
+                        self._buffers[i].append(arr)
         except Exception as e:
-            self._sys_error = f"{type(e).__name__}: {e}"
-            print(f"[audio système] {self._sys_error}", file=sys.stderr)
-        finally:
-            try:
-                import ctypes
-                ctypes.windll.ole32.CoUninitialize()
-            except Exception:
-                pass
+            msg = f"{src.get('name', src.get('id'))} — {type(e).__name__}: {e}"
+            with self._lock:
+                self._errors.append(msg)
+            print(f"[audio] {msg}", file=sys.stderr)
+        # NB : pas de CoUninitialize (le thread se termine, COM est nettoyé) ;
+        # un CoUninitialize ici pourrait casser le COM partagé de soundcard.
 
     # ----- arrêt -----
     def stop(self):
-        """Arrête la capture, retourne l'audio capturé (np.float32, 1D)."""
-        if self.source == "system":
-            self._sys_running = False
-            if self._sys_thread is not None:
-                self._sys_thread.join(timeout=2.0)
-                self._sys_thread = None
-        else:
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                finally:
-                    self._stream = None
+        """Arrête toutes les captures et retourne l'audio mixé (np.float32, 1D)."""
+        self._running = False
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
         with self._lock:
-            frames = self._frames
-            self._frames = []
-        if not frames:
+            buffers = self._buffers
+            self._buffers = {}
+        arrays = []
+        for i in sorted(buffers):
+            if buffers[i]:
+                a = np.concatenate(buffers[i]).reshape(-1)
+                if a.size:
+                    arrays.append(a)
+        if not arrays:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(frames, axis=0).reshape(-1)
+        if len(arrays) == 1:
+            return arrays[0]
+        # Mix : somme alignée au début + complétée par des zéros, puis normalisée.
+        n = max(a.size for a in arrays)
+        mix = np.zeros(n, dtype=np.float32)
+        for a in arrays:
+            mix[:a.size] += a
+        peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+        if peak > 1.0:
+            mix /= peak
+        return mix
 
     def close(self):
         """Fermeture défensive (sortie de l'application)."""
-        self._sys_running = False
-        if self._stream is not None:
+        self._running = False
+        for t in self._threads:
             try:
-                self._stream.stop()
-                self._stream.close()
+                t.join(timeout=1.0)
             except Exception:
                 pass
-            self._stream = None
-        if self._sys_thread is not None:
-            try:
-                self._sys_thread.join(timeout=1.0)
-            except Exception:
-                pass
-            self._sys_thread = None
+        self._threads = []
 
 
 # ===========================================================================
@@ -289,7 +289,7 @@ class Recorder:
 import tkinter as tk  # noqa: E402
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "dictee_config.json")
+                           "plume_config.json")
 
 # --- Palettes de thèmes -----------------------------------------------------
 THEME_ORDER = ["Sombre", "Clair", "Océan"]
@@ -414,6 +414,10 @@ class RoundedButton(tk.Canvas):
 
     def set_enabled(self, on):
         self._enabled = on
+        self._redraw()
+
+    def set_text(self, text):
+        self.text = text
         self._redraw()
 
     def _palette(self):
@@ -578,74 +582,6 @@ class MicButton(tk.Canvas):
         self._redraw()
 
 
-# --- Contrôle segmenté (choix de la source : micro / système) ---------------
-class SegmentedToggle(tk.Canvas):
-    def __init__(self, parent, options, on_change, width, height, font, scale=1.0):
-        super().__init__(parent, width=width, height=height,
-                         highlightthickness=0, bd=0)
-        self.options = options          # [(clé, libellé), ...]
-        self.on_change = on_change
-        self.cw, self.ch = width, height
-        self.font = font
-        self.scale = scale
-        self.theme = None
-        self.current = options[0][0]
-        self._enabled = True
-        self.bind("<Button-1>", self._click)
-        self.bind("<Motion>", self._motion)
-
-    def set_theme(self, theme, page_bg):
-        self.theme = theme
-        self.configure(bg=page_bg)
-        self._redraw()
-
-    def set_current(self, key):
-        self.current = key
-        self._redraw()
-
-    def set_enabled(self, on):
-        self._enabled = on
-        self._redraw()
-
-    def _seg(self, i):
-        w = self.cw / len(self.options)
-        return i * w, 0, (i + 1) * w, self.ch
-
-    def _redraw(self):
-        if self.theme is None:
-            return
-        self.delete("all")
-        t = self.theme
-        _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
-                    fill=t["elevated"], outline=t["border"])
-        pad = max(2, int(2 * self.scale))
-        for i, (key, label) in enumerate(self.options):
-            x1, y1, x2, y2 = self._seg(i)
-            if key == self.current:
-                fill = t["accent"] if self._enabled else t["border"]
-                _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
-                            (self.ch - 2 * pad) / 2, fill=fill, outline=fill)
-                fg = t["on_accent"] if self._enabled else t["muted"]
-            else:
-                fg = t["muted"]
-            self.create_text((x1 + x2) / 2, self.ch / 2, text=label,
-                             fill=fg, font=self.font)
-
-    def _click(self, e):
-        if not self._enabled:
-            return
-        i = max(0, min(len(self.options) - 1, int(e.x // (self.cw / len(self.options)))))
-        key = self.options[i][0]
-        if key != self.current:
-            self.current = key
-            self._redraw()
-            if self.on_change:
-                self.on_change(key)
-
-    def _motion(self, _e):
-        self.configure(cursor="hand2" if self._enabled else "")
-
-
 # --- Sélecteur de thème (3 pastilles colorées) ------------------------------
 class ThemeDots(tk.Frame):
     def __init__(self, parent, on_select, scale=1.0):
@@ -678,7 +614,7 @@ class ThemeDots(tk.Frame):
 
 
 # --- Application ------------------------------------------------------------
-class DicteeApp:
+class PlumeApp:
     def __init__(self, root):
         self.root = root
 
@@ -701,14 +637,16 @@ class DicteeApp:
             self.theme_name = DEFAULT_THEME
         self.theme = THEMES[self.theme_name]
 
-        # Source de capture mémorisée (micro / système). Repli sur micro si la
-        # capture système n'est pas disponible.
-        self.source = cfg.get("source", "mic")
-        if self.source not in ("mic", "system") or not SYSTEM_AUDIO_AVAILABLE:
-            self.source = "mic"
+        # Sélection de sources mémorisée : liste de {"id", "loopback"}.
+        # Les noms réels sont résolus après l'énumération des périphériques.
+        self._pending_sources = cfg.get("sources")  # None ou liste
 
         self.q = queue.Queue()
-        self.recorder = Recorder(SAMPLE_RATE, source=self.source)
+        self.recorder = Recorder(SAMPLE_RATE)
+        self.devices = {"inputs": [], "outputs": [], "default_mic_id": None}
+        self.selected_sources = []     # liste de {"id","name","loopback"}
+        self.devices_loaded = False
+        self._sources_dialog = None
         self.model = None
         self.backend = None
         self.recording = False
@@ -721,7 +659,7 @@ class DicteeApp:
         self.f_seg = ("Segoe UI", 9, "bold")
         self.f_text = ("Segoe UI", 11)
 
-        root.title("  Dictée")
+        root.title("  Plume")
         root.resizable(False, False)
         self._compact_geom = f"{self.px(360)}x{self.px(252)}"
         self._expanded_geom = f"{self.px(360)}x{self.px(514)}"
@@ -738,6 +676,7 @@ class DicteeApp:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self._pump_queue)
         threading.Thread(target=self._load_model_worker, daemon=True).start()
+        threading.Thread(target=self._enumerate_worker, daemon=True).start()
 
     def px(self, n):
         return int(round(n * self.scale))
@@ -751,7 +690,7 @@ class DicteeApp:
         # En-tête : titre + sélecteur de thème
         self.header = tk.Frame(self.container)
         self.header.pack(fill="x", padx=pad, pady=(self.px(12), 0))
-        self.title_lbl = tk.Label(self.header, text="Dictée", font=self.f_title)
+        self.title_lbl = tk.Label(self.header, text="Plume", font=self.f_title)
         self.title_lbl.pack(side="left")
         self.dots = ThemeDots(self.header, self._on_pick_theme, self.scale)
         self.dots.pack(side="right")
@@ -763,18 +702,14 @@ class DicteeApp:
                                  size=self.px(86), scale=self.scale)
         self.mic_btn.pack()
 
-        # Sélecteur de source : micro ou son système (loopback)
-        sys_label = "🔊  Système" if SYSTEM_AUDIO_AVAILABLE else "🔊  Système (indispo.)"
-        self.source_sel = SegmentedToggle(
-            self.container,
-            options=[("mic", "🎙  Micro"), ("system", sys_label)],
-            on_change=self._on_source_change,
-            width=self.px(232), height=self.px(34),
-            font=self.f_seg, scale=self.scale,
+        # Bouton d'accès au sélecteur de sources (micros / son du PC, mix possible)
+        self.sources_btn = RoundedButton(
+            self.container, "🎛  Sources…", self._open_sources_dialog,
+            width=self.px(252), height=self.px(34), radius=self.px(10),
+            font=self.f_seg, kind="ghost", scale=self.scale,
         )
-        self.source_sel.pack(pady=(self.px(8), 0))
-        self.source_sel.set_current(self.source)
-        self.mic_btn.set_mode(self.source)
+        self.sources_btn.pack(pady=(self.px(8), 0))
+        self.sources_btn.set_enabled(False)  # activé après énumération des périphériques
 
         # Barre d'état
         self.status_var = tk.StringVar(value="Chargement du modèle…")
@@ -813,34 +748,81 @@ class DicteeApp:
                             highlightcolor=t["border"])
         self.dots.render(name, t["bg"])
         self.mic_btn.set_theme(t, t["bg"])
-        self.source_sel.set_theme(t, t["bg"])
+        self.sources_btn.set_theme(t, t["bg"])
         self.copy_btn.set_theme(t, t["bg"])
         _set_titlebar_dark(self.root, t.get("dark_titlebar", False))
+        if self._sources_dialog is not None:
+            self._rebuild_sources_dialog()
         if persist:
             self._save_prefs()
 
     def _save_prefs(self):
-        save_config({"theme": self.theme_name, "source": self.source})
+        save_config({
+            "theme": self.theme_name,
+            "sources": [{"id": s["id"], "loopback": s["loopback"]}
+                        for s in self.selected_sources],
+        })
 
     def _ready_status(self):
-        src = "son système" if self.source == "system" else "micro"
-        return f"Prêt — {self.backend}  ·  {src}"
+        return f"Prêt — {self.backend}  ·  {self._source_summary()}"
+
+    # ----- Sources audio -----
+    def _source_summary(self, maxlen=30):
+        n = len(self.selected_sources)
+        if n == 0:
+            return "aucune source"
+        if n == 1:
+            name = self.selected_sources[0]["name"]
+            return name if len(name) <= maxlen else name[:maxlen - 1] + "…"
+        return f"{n} sources (mix)"
+
+    def _refresh_source_ui(self):
+        """Met à jour le bouton Sources et l'icône du gros bouton."""
+        self.sources_btn.set_text("🎛  " + self._source_summary(26))
+        all_loop = (len(self.selected_sources) > 0
+                    and all(s["loopback"] for s in self.selected_sources))
+        self.mic_btn.set_mode("system" if all_loop else "mic")
+        if self.model is not None and not self.recording:
+            self.status_var.set(self._ready_status())
+
+    def _apply_initial_selection(self):
+        """Choisit la sélection initiale après énumération : sélection mémorisée
+        (filtrée sur les périphériques présents), sinon le micro par défaut."""
+        available = {d["id"]: d for d in
+                     (self.devices["inputs"] + self.devices["outputs"])}
+        chosen = []
+        if self._pending_sources:
+            for s in self._pending_sources:
+                d = available.get(s.get("id"))
+                if d:
+                    chosen.append(d)
+        if not chosen:
+            dft = self.devices.get("default_mic_id")
+            if dft and dft in available:
+                chosen = [available[dft]]
+            elif self.devices["inputs"]:
+                chosen = [self.devices["inputs"][0]]
+            elif self.devices["outputs"]:
+                chosen = [self.devices["outputs"][0]]
+        self.selected_sources = chosen
+        self.recorder.set_sources(chosen)
+        self._save_prefs()
+
+    def _enumerate_worker(self):
+        try:
+            import ctypes
+            ctypes.windll.ole32.CoInitialize(None)  # COM requis sur ce thread
+        except Exception:
+            pass
+        try:
+            data = enumerate_devices()
+            self.q.put(("devices", data))
+        except Exception as e:
+            self.q.put(("devices_error", f"{type(e).__name__}: {e}"))
 
     def _on_pick_theme(self, name):
         if name != self.theme_name:
             self.apply_theme(name)
-
-    def _on_source_change(self, key):
-        if key == "system" and not SYSTEM_AUDIO_AVAILABLE:
-            self.source_sel.set_current("mic")
-            self.status_var.set("Capture système indisponible (paquet 'soundcard' absent).")
-            return
-        self.source = key
-        self.recorder.set_source(key)
-        self.mic_btn.set_mode(key)
-        self._save_prefs()
-        if self.model is not None and not self.recording:
-            self.status_var.set(self._ready_status())
 
     # ----- Workers (threads secondaires) : ne touchent JAMAIS aux widgets -----
     def _load_model_worker(self):
@@ -881,55 +863,78 @@ class DicteeApp:
             pass
         self.root.after(100, self._pump_queue)
 
+    def _update_idle_controls(self):
+        """État des boutons hors enregistrement/transcription."""
+        can_record = (self.model is not None and len(self.selected_sources) > 0
+                      and not self.recording)
+        self.mic_btn.set_enabled(can_record)
+        self.sources_btn.set_enabled(self.devices_loaded and not self.recording)
+
     def _handle(self, kind, payload):
-        if kind == "ready":
+        if kind == "devices":
+            self.devices = payload
+            self.devices_loaded = True
+            if not self.selected_sources:
+                self._apply_initial_selection()
+            else:  # Actualiser : garder la sélection encore présente
+                avail = {d["id"]: d for d in payload["inputs"] + payload["outputs"]}
+                self.selected_sources = [avail[s["id"]] for s in self.selected_sources
+                                         if s["id"] in avail]
+                self.recorder.set_sources(self.selected_sources)
+            self._refresh_source_ui()
+            self._update_idle_controls()
+            if self._sources_dialog is not None:
+                self._rebuild_sources_dialog()
+        elif kind == "devices_error":
+            self.status_var.set(f"Périphériques audio : {payload}")
+            print(f"[Plume] Énumération : {payload}", file=sys.stderr)
+        elif kind == "ready":
             backend, dt = payload
-            self.status_var.set(self._ready_status())
-            self.mic_btn.set_enabled(True)
-            self.source_sel.set_enabled(True)
-            print(f"[Dictée] Modèle prêt en {dt:.1f}s — backend : {backend}",
+            self._update_idle_controls()
+            self.status_var.set(self._ready_status() if self.selected_sources
+                                else f"Prêt — {backend}  ·  choisissez une source")
+            print(f"[Plume] Modèle prêt en {dt:.1f}s — backend : {backend}",
                   file=sys.stderr)
         elif kind == "result":
             self._append_text(payload)
             self._reveal_text_area()
-            self.mic_btn.set_enabled(True)
-            self.source_sel.set_enabled(True)
+            self._update_idle_controls()
             self.status_var.set(self._ready_status())
         elif kind == "empty":
-            self.mic_btn.set_enabled(True)
-            self.source_sel.set_enabled(True)
+            self._update_idle_controls()
             self.status_var.set("Rien à transcrire (enregistrement vide ou trop court).")
         elif kind == "error":
-            self.mic_btn.set_enabled(self.model is not None)
-            self.source_sel.set_enabled(self.model is not None)
+            self._update_idle_controls()
             self.status_var.set(payload)
-            print(f"[Dictée] {payload}", file=sys.stderr)
+            print(f"[Plume] {payload}", file=sys.stderr)
 
     # ----- Actions UI (thread principal) -----
     def _on_mic(self):
         if not self.recording:
+            if not self.selected_sources:
+                self.status_var.set("Aucune source — ouvrez « Sources… ».")
+                return
             try:
                 self.recorder.start()
             except Exception as e:
-                src = "Capture système" if self.source == "system" else "Micro"
-                self.status_var.set(f"{src} indisponible : {e}")
-                print(f"[Dictée] {src} indisponible : {e}", file=sys.stderr)
+                self.status_var.set(f"Capture indisponible : {e}")
+                print(f"[Plume] Capture indisponible : {e}", file=sys.stderr)
                 return
             self.recording = True
             self.mic_btn.set_recording(True)
-            self.source_sel.set_enabled(False)
-            label = "son système" if self.source == "system" else "micro"
-            self.status_var.set(f"Enregistrement… ({label})")
+            self.sources_btn.set_enabled(False)
+            self.status_var.set(f"Enregistrement… ({self._source_summary(22)})")
         else:
             self.recording = False
             audio = self.recorder.stop()
             self.mic_btn.set_recording(False)
-            err = self.recorder.consume_error()
-            if err and audio.size == 0:
-                self.status_var.set(f"Capture système : {err}")
-                self.mic_btn.set_enabled(True)
-                self.source_sel.set_enabled(True)
+            errs = self.recorder.consume_errors()
+            if errs and audio.size == 0:
+                self.status_var.set("Capture : " + " ; ".join(errs)[:120])
+                self._update_idle_controls()
                 return
+            if errs:
+                print("[Plume] erreurs capture (partielles) :", errs, file=sys.stderr)
             self.mic_btn.set_enabled(False)
             self.status_var.set("Transcription…")
             threading.Thread(target=self._transcribe_worker, args=(audio,),
@@ -956,6 +961,134 @@ class DicteeApp:
             self.root.geometry(self._expanded_geom)
             self.text_revealed = True
 
+    # ----- Dialogue de sélection des sources -----
+    def _refresh_devices(self):
+        threading.Thread(target=self._enumerate_worker, daemon=True).start()
+
+    def _open_sources_dialog(self):
+        if not self.devices_loaded:
+            self.status_var.set("Énumération des périphériques en cours…")
+            return
+        if self._sources_dialog is not None:
+            try:
+                self._sources_dialog.lift()
+            except Exception:
+                pass
+            return
+        t = self.theme
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Sources audio")
+        dlg.configure(bg=t["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        try:
+            dlg.geometry(f"+{self.root.winfo_rootx() + self.px(24)}"
+                         f"+{self.root.winfo_rooty() + self.px(44)}")
+        except Exception:
+            pass
+        dlg.protocol("WM_DELETE_WINDOW", self._close_sources_dialog)
+        self._sources_dialog = dlg
+        self._dialog_vars = {}
+        self.root.update_idletasks()
+        _set_titlebar_dark(dlg, t.get("dark_titlebar", False))
+        self._rebuild_sources_dialog()
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+
+    def _rebuild_sources_dialog(self):
+        dlg = self._sources_dialog
+        if dlg is None:
+            return
+        t = self.theme
+        dlg.configure(bg=t["bg"])
+        for w in dlg.winfo_children():
+            w.destroy()
+        self._dialog_vars = {}
+        selected_ids = {s["id"] for s in self.selected_sources}
+        pad = self.px(14)
+
+        tk.Label(dlg, text="Cochez une ou plusieurs sources — mix possible (molette pour défiler)",
+                 bg=t["bg"], fg=t["text"], font=self.f_seg, anchor="w",
+                 wraplength=self.px(360), justify="left").pack(
+                     fill="x", padx=pad, pady=(self.px(12), self.px(4)))
+
+        body = tk.Frame(dlg, bg=t["bg"])
+        body.pack(fill="both", expand=True, padx=pad)
+        canvas = tk.Canvas(body, bg=t["bg"], highlightthickness=0, bd=0,
+                           width=self.px(372), height=self.px(300))
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=t["bg"])
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_config(_e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(win, width=canvas.winfo_width())
+        inner.bind("<Configure>", _on_config)
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all(
+            "<MouseWheel>", lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units")))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        def section(title):
+            tk.Label(inner, text=title, bg=t["bg"], fg=t["muted"], font=self.f_seg,
+                     anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
+
+        def add_device(d):
+            var = tk.IntVar(value=1 if d["id"] in selected_ids else 0)
+            self._dialog_vars[d["id"]] = (var, d)
+            tk.Checkbutton(
+                inner, text="  " + d["name"], variable=var,
+                bg=t["bg"], fg=t["text"], selectcolor=t["surface"],
+                activebackground=t["bg"], activeforeground=t["text"],
+                anchor="w", font=self.f_status, bd=0, highlightthickness=0,
+                takefocus=0,
+            ).pack(fill="x")
+
+        def empty():
+            tk.Label(inner, text="   (aucun)", bg=t["bg"], fg=t["muted"],
+                     font=self.f_status, anchor="w").pack(fill="x")
+
+        section("🎙  Micros / entrées")
+        [add_device(d) for d in self.devices["inputs"]] or empty()
+        section("🔊  Son du PC (sorties, captées en loopback)")
+        [add_device(d) for d in self.devices["outputs"]] or empty()
+
+        bar = tk.Frame(dlg, bg=t["bg"])
+        bar.pack(fill="x", padx=pad, pady=(self.px(8), self.px(12)))
+        refresh = RoundedButton(bar, "↻  Actualiser", self._refresh_devices,
+                                width=self.px(120), height=self.px(36),
+                                radius=self.px(10), font=self.f_seg, kind="ghost",
+                                scale=self.scale)
+        refresh.pack(side="left")
+        refresh.set_theme(t, t["bg"])
+        ok = RoundedButton(bar, "Valider", self._apply_sources_dialog,
+                           width=self.px(120), height=self.px(36),
+                           radius=self.px(10), font=self.f_btn, kind="accent",
+                           scale=self.scale)
+        ok.pack(side="right")
+        ok.set_theme(t, t["bg"])
+
+    def _apply_sources_dialog(self):
+        chosen = [d for (var, d) in self._dialog_vars.values() if var.get()]
+        self.selected_sources = chosen
+        self.recorder.set_sources(chosen)
+        self._save_prefs()
+        self._refresh_source_ui()
+        self._update_idle_controls()
+        self._close_sources_dialog()
+
+    def _close_sources_dialog(self):
+        dlg = self._sources_dialog
+        self._sources_dialog = None
+        if dlg is not None:
+            try:
+                self.root.unbind_all("<MouseWheel>")
+                dlg.grab_release()
+            except Exception:
+                pass
+            dlg.destroy()
+
     def on_close(self):
         try:
             self.recorder.close()
@@ -968,7 +1101,7 @@ class DicteeApp:
 # Auto-test
 # ---------------------------------------------------------------------------
 def run_selftest():
-    print("=== Auto-test Dictée ===")
+    print("=== Auto-test Plume ===")
     print(f"Modèle : {MODEL_SIZE} | SR : {SAMPLE_RATE} Hz | Langue : {LANGUAGE}")
     print(f"VAD disponible (onnxruntime) : {VAD_FILTER}")
     if ADDED_DLL_DIRS:
@@ -1013,7 +1146,7 @@ def main():
 
     _enable_dpi_awareness()
     root = tk.Tk()
-    DicteeApp(root)
+    PlumeApp(root)
     root.mainloop()
 
 

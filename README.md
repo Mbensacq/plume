@@ -1,22 +1,22 @@
-# Dictée — reconnaissance vocale locale (français)
+# Plume — reconnaissance vocale locale (français)
 
-Application de dictée vocale **100 % locale et hors ligne** (après installation).
-Vous parlez au micro **— ou vous transcrivez le son joué par le PC —** et le texte
-français apparaît dans une fenêtre, copiable en un clic (pratique pour Discord, etc.).
+**Plume** est une application de dictée vocale **100 % locale et hors ligne** (après
+installation). Vous parlez au micro **— ou vous transcrivez le son joué par le PC, ou
+un mélange des deux —** et le texte français apparaît dans une fenêtre, copiable en un
+clic (pratique pour Discord, etc.).
 
 - **Transcription** : [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper via CTranslate2)
-- **Capture micro** : [sounddevice](https://python-sounddevice.readthedocs.io) (PortAudio)
-- **Capture son système** : [soundcard](https://github.com/bastibe/SoundCard) (loopback WASAPI, Windows)
-- **Interface** : `tkinter` (bibliothèque standard de Python), 3 thèmes, rendu DPI-aware
+- **Capture audio** : [soundcard](https://github.com/bastibe/SoundCard) — micros **et** sorties (loopback WASAPI)
+- **Interface** : `tkinter` (standard), 3 thèmes, rendu DPI-aware, sélecteur de périphériques
 - **Modèle par défaut** : `large-v3`, GPU NVIDIA (CUDA/float16) avec **repli CPU (int8) automatique**
 
 ---
 
 ## 1. Prérequis
 
-- **Windows 11** (testé), Windows 10 probablement compatible.
+- **Windows 10/11** (la capture audio utilise WASAPI, donc Windows uniquement).
 - **Python 3.10 ou plus** (développé et testé sur **3.13.13**). Cochez « Add Python to PATH » à l'installation.
-- Un **microphone**.
+- Au moins un **microphone** et/ou une **sortie audio** (pour la capture du son du PC).
 - **Pour le GPU (recommandé)** : carte **NVIDIA** avec pilote récent (testé sur RTX 4090,
   pilote 596.49). Les bibliothèques CUDA 12 / cuDNN 9 sont installées via `pip` (voir ci-dessous),
   **aucun CUDA Toolkit système n'est requis**.
@@ -29,7 +29,7 @@ français apparaît dans une fenêtre, copiable en un clic (pratique pour Discor
 
 ## 2. Installation
 
-Dans le dossier du projet (`C:\Users\firer\Documents\voicetotext`), ouvrez PowerShell :
+Dans le dossier du projet, ouvrez PowerShell :
 
 ```powershell
 # 1. Créer l'environnement virtuel
@@ -55,58 +55,63 @@ Trois façons, au choix :
 
 | Méthode | Commande / action | Console visible ? |
 |---|---|---|
-| **Double-clic** | `Dictee.vbs` | Non (recommandé) |
+| **Double-clic** | `Plume.vbs` | Non (recommandé) |
 | **Batch** | `lancer.bat` | Non |
-| **Terminal** | `.venv\Scripts\python dictee.py` | Oui (utile pour voir les logs) |
+| **Terminal** | `.venv\Scripts\python plume.py` | Oui (utile pour voir les logs) |
 
 Pour lancer sans console depuis un terminal :
 
 ```powershell
-.venv\Scripts\pythonw dictee.py
+.venv\Scripts\pythonw plume.py
 ```
 
 ---
 
 ## 4. Utilisation
 
-1. Au démarrage, la fenêtre « Dictée » affiche **« Chargement du modèle… »**
-   puis **« Prêt — GPU (CUDA) »** (ou **« Prêt — CPU »** en repli).
-2. Cliquez sur **🎙 Micro** pour démarrer l'enregistrement (le bouton devient **⏹ Arrêter**).
+1. Au démarrage, la fenêtre « Plume » affiche **« Chargement du modèle… »**
+   puis **« Prêt — GPU (CUDA) · <source> »** (ou **CPU** en repli).
+2. Cliquez sur le **gros bouton** pour démarrer l'enregistrement (il devient rouge ⏹).
 3. Cliquez de nouveau pour arrêter : la transcription se lance, la fenêtre s'agrandit
    et le texte apparaît dans une zone défilante.
-4. **📋 Copier** place tout le texte dans le presse-papiers (collez-le ensuite avec `Ctrl+V`).
+4. **📋 Copier** place tout le texte dans le presse-papiers (collez-le avec `Ctrl+V`).
 5. **Mode ajout** : chaque nouvelle dictée s'**ajoute à la suite** de la précédente
    (séparée par une espace). Pour repartir de zéro, effacez la zone de texte manuellement.
 
-### Source : micro ou son système
+### Choisir les sources audio (micro, son du PC, ou mix)
 
-Sous le bouton, un sélecteur permet de choisir **ce qui est transcrit** :
+Cliquez sur le bouton **🎛 Sources…** : une fenêtre liste tous les périphériques :
 
-- **🎙 Micro** : votre microphone (par défaut).
-- **🔊 Système** : le **son joué par le PC** (loopback WASAPI) — utile pour transcrire
-  une vidéo, un appel, ce que dit une personne dans un vocal Discord, etc. Le gros
-  bouton affiche alors une icône de haut-parleur.
+- **🎙 Micros / entrées** — tous vos micros et entrées ligne.
+- **🔊 Son du PC (sorties, captées en loopback)** — chaque sortie audio ; la capturer
+  revient à transcrire **ce que joue le PC** sur ce périphérique (vidéo, appel, vocal
+  Discord…).
 
-Marche à suivre pour le son système : sélectionnez **Système**, lancez la lecture du
-son à transcrire, cliquez sur le bouton pour démarrer, puis cliquez à nouveau pour
-arrêter et transcrire. Le choix de source est **mémorisé** entre les lancements.
+**Cochez une ou plusieurs sources**, puis **Valider**. Plusieurs sources cochées sont
+**enregistrées en même temps et mélangées** (mix) avant transcription — par exemple
+votre micro **+** le son d'un appel. Le bouton **↻ Actualiser** rafraîchit la liste
+si vous branchez/débranchez un périphérique.
+
+- Le gros bouton affiche une icône **micro** ou **haut-parleur** selon la sélection.
+- Le bouton **🎛 Sources…** et la barre d'état rappellent la sélection courante
+  (nom du périphérique, ou « N sources (mix) »).
+- La sélection est **mémorisée** entre les lancements.
 
 > Notes :
-> - La capture système est **Windows uniquement** (WASAPI) et capte la **sortie par
->   défaut** de Windows (Paramètres → Son → Sortie). Changez la sortie par défaut pour
->   capter un autre périphérique.
-> - Seul ce qui est **réellement audible** est capté : si une appli a son propre volume
->   à zéro (ou est en sourdine), rien n'est transcrit.
+> - Pour le « son du PC », **lancez d'abord la lecture** puis enregistrez. Seul ce qui
+>   est **réellement audible** est capté (une appli en sourdine ne produit rien).
+> - Capturer une sortie casque/HP en loopback **ne coupe pas** votre écoute : vous
+>   continuez d'entendre normalement.
+> - Tout est ramené en **16 kHz mono** (format de Whisper) automatiquement.
 
 ### Thèmes & apparence
 
-- Trois thèmes au choix via les **3 pastilles colorées** en haut à droite :
-  **Sombre** (indigo), **Clair** (bleu) et **Océan** (turquoise). La barre de titre
-  Windows s'assortit automatiquement (sombre/clair).
-- Le thème choisi est **mémorisé** entre les lancements (fichier `dictee_config.json`,
-  créé automatiquement à côté de `dictee.py`). Supprimez-le pour revenir au thème par défaut.
-- L'interface est **DPI-aware** : rendu net (non pixelisé) même sur écran haute résolution
-  ou avec une mise à l'échelle Windows à 125 %/150 %/200 %.
+- Trois thèmes via les **3 pastilles colorées** en haut à droite : **Sombre** (indigo),
+  **Clair** (bleu) et **Océan** (turquoise). La barre de titre Windows s'assortit.
+- Thème **et** sélection de sources sont **mémorisés** (fichier `plume_config.json`,
+  créé automatiquement à côté de `plume.py`). Supprimez-le pour tout réinitialiser.
+- L'interface est **DPI-aware** : rendu net (non pixelisé) même en mise à l'échelle
+  Windows à 125 %/150 %/200 %.
 
 ---
 
@@ -115,7 +120,7 @@ arrêter et transcrire. Le choix de source est **mémorisé** entre les lancemen
 Vérifie le chargement du modèle, le backend (GPU/CPU) et la transcription, **sans ouvrir l'interface** :
 
 ```powershell
-.venv\Scripts\python dictee.py --selftest
+.venv\Scripts\python plume.py --selftest
 ```
 
 Sortie attendue (extrait) :
@@ -135,7 +140,7 @@ Transcription (2s)      : ~0.2 s
 
 ## 6. Réglages — changer le modèle (`MODEL_SIZE`)
 
-En haut de [`dictee.py`](dictee.py) :
+En haut de [`plume.py`](plume.py) :
 
 ```python
 SAMPLE_RATE = 16000        # ne pas changer (format attendu par Whisper)
@@ -163,8 +168,8 @@ Autres constantes utiles : `BEAM_SIZE` (qualité du décodage), `VAD_FILTER`
 ## 7. Dépannage CUDA (le point fragile)
 
 Le statut affiche **« Prêt — CPU »** alors que vous avez une carte NVIDIA ?
-Lancez depuis un terminal (`.venv\Scripts\python dictee.py`) pour voir la **cause** affichée
-en console (`[Dictée] Chargement CUDA échoué -> repli CPU. Cause : …`).
+Lancez depuis un terminal (`.venv\Scripts\python plume.py`) pour voir la **cause** affichée
+en console (`[Plume] Chargement CUDA échoué -> repli CPU. Cause : …`).
 
 Pistes :
 
@@ -195,32 +200,46 @@ Dans tous les cas, **le repli CPU reste fonctionnel** : l'application ne plante 
 
 ---
 
-## 8. Limites connues
+## 8. Dépannage audio
+
+- **« Aucune source — ouvrez Sources… »** : aucune source n'est cochée. Ouvrez 🎛 Sources…
+  et cochez au moins un périphérique.
+- **Le son du PC ne se transcrit pas** : vérifiez que la lecture est lancée et audible,
+  et que vous avez coché la **bonne sortie** (celle réellement utilisée) dans 🎛 Sources….
+  Utilisez **↻ Actualiser** après un changement de périphérique.
+- **Un périphérique a disparu** de la liste : il a été débranché ; **↻ Actualiser**.
+  Une source mémorisée mais absente est simplement ignorée au démarrage.
+- **Mix déséquilibré** : les sources sont mélangées telles quelles (puis normalisées).
+  Ajustez les volumes Windows de chaque source si l'une couvre l'autre.
+
+---
+
+## 9. Limites connues
 
 - **Noms propres, jargon, anglais, bruit de fond** : sources d'erreurs inhérentes à tout
   moteur STT. Parlez clairement, micro proche.
 - **Hallucinations sur les silences** : limitées par le filtre VAD (activé automatiquement
   si `onnxruntime` est disponible), pas totalement éliminées.
-- **Mode ajout uniquement** : pas de bouton « Effacer » dans l'interface (effacez à la main
-  dans la zone de texte).
-- **Barre de titre Océan** : si Windows a l'option « Afficher la couleur d'accentuation
-  sur les barres de titre » activée, la barre peut prendre votre couleur d'accent système
-  (purement cosmétique, le mode sombre reste appliqué).
-- **Capture son système** : Windows uniquement (loopback WASAPI via `soundcard`). Si le
-  paquet `soundcard` est absent, l'option « Système » est signalée indisponible et seul le
-  micro fonctionne. La capture suit la **sortie audio par défaut** de Windows.
+- **Mode ajout uniquement** : pas de bouton « Effacer » dans l'interface (effacez à la main).
+- **Mix = alignement au début** : les sources sont synchronisées sur l'instant de départ,
+  pas échantillon par échantillon. Un léger décalage (quelques dizaines de ms) entre
+  sources est sans incidence pour la transcription.
+- **Capture = Windows/WASAPI** via `soundcard`. Sans ce paquet, aucune capture (l'app le
+  signale au démarrage).
+- **Barre de titre Océan** : si Windows affiche la couleur d'accentuation sur les barres
+  de titre, la barre peut prendre cette couleur (cosmétique ; le mode sombre reste actif).
 - **Latence du 1er lancement** : téléchargement du modèle (~1,5 Go), une seule fois.
 
 ---
 
-## 9. Fichiers du projet
+## 10. Fichiers du projet
 
 | Fichier | Rôle |
 |---|---|
-| `dictee.py` | Application (UI + thèmes + transcription + auto-test `--selftest`). Constantes en haut de fichier. |
+| `plume.py` | Application (UI + thèmes + sources + transcription + auto-test `--selftest`). Constantes en haut de fichier. |
 | `requirements.txt` | Dépendances Python (cœur + GPU). |
-| `Dictee.vbs` | Lanceur double-clic sans console. |
+| `Plume.vbs` | Lanceur double-clic sans console. |
 | `lancer.bat` | Lanceur batch sans console. |
-| `dictee_config.json` | Préférences (thème choisi). Créé automatiquement ; suppressible sans risque. |
+| `plume_config.json` | Préférences (thème + sources). Créé automatiquement ; suppressible sans risque. |
 | `README.md` | Ce fichier. |
 | `.venv\` | Environnement virtuel (créé à l'installation). |
