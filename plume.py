@@ -26,18 +26,67 @@ import queue
 import threading
 import importlib.util
 
+
+# ---------------------------------------------------------------------------
+# Emplacement de l'application (portable : tout est ancré sur le dossier de
+# l'exécutable, que l'on soit lancé comme script .py ou comme .exe PyInstaller)
+# ---------------------------------------------------------------------------
+def _app_dir():
+    """Dossier de base servant d'ancre aux fichiers portables (config,
+    corrections, modèle). Dossier de l'exécutable si l'app est « figée »
+    (PyInstaller), sinon dossier de ce script."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = _app_dir()
+
+
+def _icon_path():
+    """Chemin du .ico de l'app s'il est présent (dans le bundle figé en priorité,
+    sinon à côté de l'app). Retourne None si absent."""
+    bases = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            bases.append(meipass)
+    bases.append(APP_DIR)
+    for b in bases:
+        p = os.path.join(b, "plume.ico")
+        if os.path.exists(p):
+            return p
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Constantes éditables
 # ---------------------------------------------------------------------------
 SAMPLE_RATE = 16000        # Hz — format attendu par Whisper (16 kHz mono)
-MODEL_SIZE = "large-v3"    # ex. "large-v3", "medium", "small" (repli CPU : viser plus petit)
+# Taille du modèle. Surchargeable SANS recompiler via $PLUME_MODEL (ex.
+# "medium" / "small" sur un PC sans GPU). Défaut : "large-v3".
+MODEL_SIZE = os.environ.get("PLUME_MODEL", "large-v3")
 LANGUAGE = "fr"            # langue forcée
+
+# Dossier de stockage du modèle Whisper (téléchargé au 1er lancement) :
+#  - Exécutable portable (PyInstaller) : « models/ » À CÔTÉ de l'exe -> l'app
+#    reste autonome et 100 % hors-ligne, le modèle se transporte avec elle.
+#  - Lancement comme script .py : None -> cache partagé HuggingFace habituel
+#    (évite de re-télécharger si le modèle y est déjà présent).
+# Surchargeable dans les deux cas via $PLUME_MODEL_DIR.
+MODEL_DIR = os.environ.get("PLUME_MODEL_DIR") or (
+    os.path.join(APP_DIR, "models") if getattr(sys, "frozen", False) else None)
 
 # Repli CPU : si le chargement/inférence CUDA échoue, on retente en CPU/int8.
 GPU_DEVICE = "cuda"
 GPU_COMPUTE_TYPE = "float16"
 CPU_DEVICE = "cpu"
 CPU_COMPUTE_TYPE = "int8"
+
+# Forcer le CPU (ignorer le GPU) si $PLUME_DEVICE=cpu. Utilisé par le build
+# « allégé » sans CUDA (PC sans carte NVIDIA) : évite une tentative GPU vouée à
+# l'échec et son message d'erreur. Surchargeable à l'exécution.
+FORCE_CPU = os.environ.get("PLUME_DEVICE", "").strip().lower() == "cpu"
 
 # Qualité de décodage (beam search). 5 = bon compromis qualité/vitesse.
 BEAM_SIZE = 5
@@ -83,8 +132,7 @@ DEFAULT_OUTPUT_MODE = "manual"
 # --- Corrections personnalisées ---
 # Fichier éditable (JSON) : { "mal transcrit": "correction", ... }.
 # Insensible à la casse, sur mots entiers. Les clés commençant par "_" sont ignorées.
-REPLACEMENTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "plume_replacements.json")
+REPLACEMENTS_PATH = os.path.join(APP_DIR, "plume_replacements.json")
 
 
 # ---------------------------------------------------------------------------
@@ -97,17 +145,28 @@ def _setup_cuda_dll_path():
     Doit être appelé AVANT d'importer faster_whisper / ctranslate2.
     Retourne la liste des répertoires ajoutés (vide si rien trouvé)."""
     added = []
+    bases = []
+
+    # Cas « figé » (PyInstaller) : les DLL nvidia sont collectées DANS le bundle,
+    # sous _internal/nvidia/<sous-paquet>/bin — un dossier que le bootloader
+    # PyInstaller n'ajoute PAS au chemin de recherche des DLL. On le fait ici.
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            bases.append(os.path.join(meipass, "nvidia"))
+
+    # Installation pip : `nvidia` est un paquet d'espace de noms (PEP 420) : pas
+    # de __file__ ; on parcourt __path__ pour localiser site-packages/nvidia.
     try:
         import nvidia  # paquets nvidia-cublas-cu12, nvidia-cudnn-cu12, ...
+        bases.extend(getattr(nvidia, "__path__", []))
     except ImportError:
-        return added
+        pass
 
-    # `nvidia` est un paquet d'espace de noms (PEP 420) : pas de __file__ ;
-    # on parcourt __path__ pour localiser le dossier site-packages/nvidia.
-    for base in list(getattr(nvidia, "__path__", [])):
+    for base in bases:
         for sub in ("cublas", "cudnn", "cuda_nvrtc"):
             bindir = os.path.join(base, sub, "bin")
-            if os.path.isdir(bindir):
+            if os.path.isdir(bindir) and bindir not in added:
                 # add_dll_directory : nécessaire sous Windows depuis Python 3.8
                 # pour que les DLL dépendantes des extensions C soient résolues.
                 try:
@@ -162,7 +221,12 @@ def _try_load(device, compute_type):
     """
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute_type)
+    # download_root : pour l'exe portable, le modèle est stocké à côté de l'app
+    # (cf. MODEL_DIR) ; en script, MODEL_DIR vaut None => cache HuggingFace.
+    if MODEL_DIR:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+    model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute_type,
+                         download_root=MODEL_DIR)
 
     # Chauffe : 1 s de signal, VAD désactivé pour garantir le passage dans
     # l'encodeur (convolutions cuDNN) même si le buffer est quasi silencieux.
@@ -177,7 +241,7 @@ def _try_load(device, compute_type):
 def load_model(prefer_gpu=True):
     """Charge le modèle Whisper. Tente le GPU (CUDA/float16) puis se rabat sur
     le CPU (int8). Retourne (model, backend_str)."""
-    if prefer_gpu:
+    if prefer_gpu and not FORCE_CPU:
         try:
             model = _try_load(GPU_DEVICE, GPU_COMPUTE_TYPE)
             return model, "GPU (CUDA)"
@@ -389,8 +453,7 @@ class Recorder:
 # ===========================================================================
 import tkinter as tk  # noqa: E402
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "plume_config.json")
+CONFIG_PATH = os.path.join(APP_DIR, "plume_config.json")
 
 # --- Palettes de thèmes -----------------------------------------------------
 THEME_ORDER = ["Sombre", "Clair", "Océan"]
@@ -561,7 +624,7 @@ class SegmentedToggle(tk.Canvas):
         self.on_change = on_change
         self.cw, self.ch = width, height
         self.font = font
-        self.scale = scale
+        self.ui_scale = scale
         self.theme = None
         self.current = options[0][0]
         self._enabled = True
@@ -592,7 +655,7 @@ class SegmentedToggle(tk.Canvas):
         t = self.theme
         _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
                     fill=t["elevated"], outline=t["border"])
-        pad = max(2, int(2 * self.scale))
+        pad = max(2, int(2 * self.ui_scale))
         for i, (key, label) in enumerate(self.options):
             x1, y1, x2, y2 = self._seg(i)
             if key == self.current:
@@ -632,7 +695,7 @@ class RoundedButton(tk.Canvas):
         self.cw, self.ch = width, height  # NB: ne pas utiliser self._w (réservé tkinter)
         self.radius = radius
         self.font = font
-        self.scale = scale
+        self.ui_scale = scale
         self.theme = None
         self._enabled = True
         self._hover = False
@@ -653,8 +716,7 @@ class RoundedButton(tk.Canvas):
         self.text = text
         self._redraw()
 
-    def _palette(self):
-        t = self.theme
+    def _palette(self, t):
         if not self._enabled:
             return t["border"], t["muted"]
         if self.kind == "accent":
@@ -662,10 +724,11 @@ class RoundedButton(tk.Canvas):
         return (t["border"] if self._hover else t["elevated"]), t["text"]
 
     def _redraw(self):
-        if self.theme is None:
+        t = self.theme
+        if t is None:
             return
         self.delete("all")
-        fill, fg = self._palette()
+        fill, fg = self._palette(t)
         _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.radius,
                     fill=fill, outline=fill)
         self.create_text(self.cw / 2, self.ch / 2, text=self.text,
@@ -694,7 +757,7 @@ class MicButton(tk.Canvas):
                          highlightthickness=0, bd=0)
         self.command = command
         self.size = size
-        self.scale = scale
+        self.ui_scale = scale
         self.theme = None
         self._enabled = False
         self._hover = False
@@ -728,7 +791,7 @@ class MicButton(tk.Canvas):
         t = self.theme
         s = self.size
         cx = cy = s / 2
-        r = s / 2 - max(2, int(3 * self.scale))
+        r = s / 2 - max(2, int(3 * self.ui_scale))
 
         if not self._enabled:
             circle, ring, icon = t["surface"], t["border"], t["muted"]
@@ -740,7 +803,7 @@ class MicButton(tk.Canvas):
             ring, icon = circle, t["on_accent"]
 
         # halo discret derrière le bouton
-        halo = max(1, int(3 * self.scale))
+        halo = max(1, int(3 * self.ui_scale))
         self.create_oval(cx - r - halo, cy - r - halo, cx + r + halo, cy + r + halo,
                          outline=t["border"], width=1)
         self.create_oval(cx - r, cy - r, cx + r, cy + r,
@@ -754,7 +817,7 @@ class MicButton(tk.Canvas):
             self._draw_mic(cx, cy, icon)
 
     def _lw(self, factor):
-        return max(2, int(factor * self.scale))
+        return max(2, int(factor * self.ui_scale))
 
     def _draw_mic(self, cx, cy, color):
         s = self.size
@@ -904,6 +967,12 @@ class PlumeApp:
         self.f_text = ("Segoe UI", 11)
 
         root.title("  Plume")
+        ico = _icon_path()
+        if ico:
+            try:                       # icône de fenêtre / barre des tâches
+                root.iconbitmap(default=ico)
+            except Exception:
+                pass
         root.resizable(False, False)
         self._compact_geom = f"{self.px(360)}x{self.px(296)}"
         self._expanded_geom = f"{self.px(360)}x{self.px(556)}"
@@ -1407,9 +1476,17 @@ class PlumeApp:
                      font=self.f_status, anchor="w").pack(fill="x")
 
         section("🎙  Micros / entrées")
-        [add_device(d) for d in self.devices["inputs"]] or empty()
+        if self.devices["inputs"]:
+            for d in self.devices["inputs"]:
+                add_device(d)
+        else:
+            empty()
         section("🔊  Son du PC (sorties, captées en loopback)")
-        [add_device(d) for d in self.devices["outputs"]] or empty()
+        if self.devices["outputs"]:
+            for d in self.devices["outputs"]:
+                add_device(d)
+        else:
+            empty()
 
         bar = tk.Frame(dlg, bg=t["bg"])
         bar.pack(fill="x", padx=pad, pady=(self.px(8), self.px(12)))

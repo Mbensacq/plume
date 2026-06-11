@@ -5,6 +5,13 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# --- Build de la version portable (PyInstaller) ---
+build/
+dist/
+Plume-portable*.zip
+# Modèle Whisper téléchargé au 1er lancement (dossier « models/ » à côté de l'app)
+models/
+
 # --- Préférences locales (spécifiques à la machine / l'utilisateur) ---
 # Contient le thème, le mode de sortie et les ID de périphériques audio (GUID),
 # qui n'ont de sens que sur la machine où ils ont été créés.

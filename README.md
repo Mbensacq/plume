@@ -10,7 +10,7 @@ clic (pratique pour Discord, etc.).
 - **Interface** : `tkinter` (standard), 3 thèmes, rendu DPI-aware, sélecteur de périphériques
 - **Modèle par défaut** : `large-v3`, GPU NVIDIA (CUDA/float16) avec **repli CPU (int8) automatique**
 
-> projet). Tests : `.venv\Scripts\python test_plume.py`.
+> **Tests** : `.venv\Scripts\python test_plume.py` (fonctions pures : ponctuation, corrections).
 
 ---
 
@@ -66,6 +66,9 @@ Pour lancer sans console depuis un terminal :
 ```powershell
 .venv\Scripts\pythonw plume.py
 ```
+
+> 💡 Pour faire tourner Plume sur **un autre PC sans y installer Python**, voir
+> **[§10 — Version portable](#10-version-portable-exécutable-windows-autonome)**.
 
 ---
 
@@ -125,8 +128,8 @@ Vous pouvez **démarrer/arrêter la dictée sans cliquer la fenêtre** (même qu
 est en arrière-plan). Plume essaie plusieurs combinaisons et active la **première
 disponible** ; le raccourci actif est affiché dans la barre d'état (`⌨ …`).
 
-Ordre essayé : `Ctrl+Alt+Espace`, `Ctrl+Maj+Espace`, `Ctrl+Alt+D`, `Ctrl+Alt+J`,
-`Ctrl+Alt+F9`. Modifiable via `HOTKEY_CANDIDATES` en haut de `plume.py`
+Ordre essayé : **`Ctrl+Alt+D`** (principal), `Ctrl+Maj+Espace`, `Ctrl+Alt+Espace`,
+`Ctrl+Alt+J`, `Ctrl+Alt+F9`. Modifiable via `HOTKEY_CANDIDATES` en haut de `plume.py`
 (`HOTKEY_ENABLED = False` pour le désactiver).
 
 > Workflow type pour Discord : mode **Insérer** + raccourci global → placez le curseur
@@ -298,12 +301,55 @@ Dans tous les cas, **le repli CPU reste fonctionnel** : l'application ne plante 
 
 ---
 
-## 10. Fichiers du projet
+## 10. Version portable (exécutable Windows autonome)
+
+Pour utiliser Plume sur **un autre PC Windows sans y installer Python** (clé USB, poste
+d'un ami…), on construit un **exécutable autonome** avec PyInstaller :
+
+```powershell
+# Une seule fois : installer la dépendance de build
+.venv\Scripts\python -m pip install -r requirements-build.txt
+
+# Construire (quelques minutes ; ~2 Go de DLL CUDA/ffmpeg embarquées)
+.\build_portable.ps1
+```
+
+Résultat : un dossier **`dist\Plume\`** contenant **`Plume.exe`**. **Copiez ce dossier
+entier** sur la machine cible et lancez `Plume.exe` — aucune installation requise.
+
+- **GPU NVIDIA utilisé si présent, repli CPU automatique sinon** : les bibliothèques
+  CUDA sont embarquées dans le paquet (d'où sa taille).
+- **Modèle non embarqué** : il se télécharge **au 1er lancement** dans un dossier
+  `models\` créé **à côté de `Plume.exe`** (connexion internet requise cette première
+  fois). Ensuite l'app est **100 % hors ligne** et le modèle se transporte avec le dossier.
+- **Préférences & corrections** : `plume_config.json` et `plume_replacements.json` sont
+  lus/écrits **à côté de `Plume.exe`** — l'application est entièrement autodescriptive.
+
+> **Pour un PC sans carte NVIDIA — variante allégée** : `.\build_portable.ps1 -Cpu`
+> produit `dist\Plume-CPU\Plume-CPU.exe`, **sans les ~1,3 Go de DLL CUDA** (paquet
+> ~250 Mo au lieu de ~2 Go, zip ~95 Mo), **forcé en CPU** et avec le modèle **`medium`**
+> par défaut (plus rapide que `large-v3` sur CPU, bonne qualité en français). On peut
+> affiner sans recompiler via `PLUME_MODEL` (`small` = plus rapide, `large-v3` = plus
+> précis) et `PLUME_MODEL_DIR` (autre dossier de modèle).
+
+> **Variante de debug** : `.\build_portable.ps1 -Console` produit
+> `dist\Plume-debug\Plume-debug.exe` — **identique mais avec une console** où
+> s'affichent les logs `[Plume] …` (repli CPU, DLL manquante…), pratique pour
+> diagnostiquer un premier lancement. `.\build_portable.ps1 -Both` construit les
+> **deux** variantes côte à côte dans `dist\`.
+
+---
+
+## 11. Fichiers du projet
 
 | Fichier | Rôle |
 |---|---|
 | `plume.py` | Application (UI + thèmes + sources + transcription + auto-test `--selftest`). Constantes en haut de fichier. |
 | `requirements.txt` | Dépendances Python (cœur + GPU). |
+| `requirements-build.txt` | Dépendance de build (PyInstaller) pour la version portable. Non requise à l'exécution. |
+| `Plume.spec` | Recette PyInstaller (build de l'exécutable autonome). |
+| `build_portable.ps1` | Script de build de la version portable (`dist\Plume\Plume.exe`). |
+| `plume.ico` | Icône de l'application (EXE + fenêtre / barre des tâches). |
 | `Plume.vbs` | Lanceur double-clic sans console. |
 | `lancer.bat` | Lanceur batch sans console. |
 | `plume_config.json` | Préférences (thème, sources, mode de sortie). Créé automatiquement ; non versionné ; suppressible sans risque. |
