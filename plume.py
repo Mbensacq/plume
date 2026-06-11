@@ -812,12 +812,8 @@ class MicButton(tk.Canvas):
             circle = t["accent_hi"] if self._hover else t["accent"]
             icon = t["on_accent"]
 
-        # anneau discret (piste) qui fait écho à l'état, puis cercle plein net
-        gap = max(2, int(4 * self.ui_scale))
-        track = t["danger"] if self._recording else (
-            t["elevated"] if self._enabled else t["border"])
-        self.create_oval(cx - r - gap, cy - r - gap, cx + r + gap, cy + r + gap,
-                         outline=track, width=max(2, int(2 * self.ui_scale)))
+        # Disque plein unique : sur un Canvas Tk (sans anti-aliasing), un fin
+        # liseré paraît « coupé »/pas rond -> on ne dessine que le disque, net.
         self.create_oval(cx - r, cy - r, cx + r, cy + r,
                          fill=circle, outline=circle)
 
