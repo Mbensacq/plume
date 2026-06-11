@@ -551,21 +551,30 @@ def _round_rect(canvas, x1, y1, x2, y2, r, **kw):
     return canvas.create_polygon(pts, smooth=True, **kw)
 
 
-def type_text(text):
+def type_text(text, avoid_hwnd=None):
     """Tape `text` (Unicode) dans la fenêtre ayant le focus clavier, via
     SendInput. Sert à l'« insertion directe » (ex. écrire dans Discord).
+
+    Retourne True si le texte a réellement été envoyé, False sinon : aucune
+    fenêtre au premier plan, ou cette fenêtre est `avoid_hwnd` (typiquement Plume
+    lui-même) — on évite ainsi de taper la dictée dans sa propre fenêtre.
 
     IMPORTANT : la structure INPUT doit avoir la MÊME taille que la structure
     Win32 (union complète mi/ki/hi). Sinon SendInput échoue silencieusement
     (cbSize invalide) et rien n'est tapé."""
     if sys.platform != "win32" or not text:
-        return
+        return False
     import ctypes
     from ctypes import wintypes
     # Évite d'envoyer Entrée (qui enverrait le message Discord par accident).
     text = text.replace("\r", " ").replace("\n", " ")
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
+    # Cible interdite (Plume au premier plan) ou aucune fenêtre -> on n'écrit pas.
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    fg = int(user32.GetForegroundWindow() or 0)
+    if not fg or (avoid_hwnd and fg == int(avoid_hwnd)):
+        return False
     ULONG_PTR = wintypes.WPARAM            # entier de la taille d'un pointeur
     INPUT_KEYBOARD = 1
     KEYEVENTF_UNICODE = 0x0004
@@ -605,7 +614,7 @@ def type_text(text):
             inp.u.ki = KEYBDINPUT(0, code, KEYEVENTF_UNICODE | up, 0, 0)
             events.append(inp)
     if not events:
-        return
+        return False
     n = len(events)
     arr = (INPUT * n)(*events)
     sent = user32.SendInput(n, arr, ctypes.sizeof(INPUT))
@@ -613,6 +622,7 @@ def type_text(text):
         err = ctypes.get_last_error()
         print(f"[Plume] insertion directe : SendInput {sent}/{n} (err {err})",
               file=sys.stderr)
+    return sent == n
 
 
 # --- Contrôle segmenté (choix multi-options) --------------------------------
@@ -959,6 +969,11 @@ class PlumeApp:
         self._hotkey_thread_id = None
         self.active_hotkey_label = None
 
+        # Insertion directe : texte en attente tant que le curseur n'est pas sur
+        # une fenêtre cible (garde-fou) + id du sondage de relance.
+        self._pending_insert = ""
+        self._insert_poll_id = None
+
         # Polices (tailles en points -> mises à l'échelle par tk scaling).
         self.f_title = ("Segoe UI", 15, "bold")
         self.f_status = ("Segoe UI", 9)
@@ -1120,10 +1135,51 @@ class PlumeApp:
             self.root.clipboard_clear()
             self.root.clipboard_append(self.text.get("1.0", "end-1c"))
         elif self.output_mode == "type":
-            try:
-                type_text(new_text + " ")
-            except Exception as e:
-                print(f"[Plume] insertion directe : {e}", file=sys.stderr)
+            self._queue_insert(new_text + " ")
+
+    def _own_hwnd(self):
+        """HWND de la fenêtre principale de Plume (pour ne pas s'insérer soi-même)."""
+        if sys.platform != "win32":
+            return 0
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            u.GetAncestor.argtypes = (wintypes.HWND, ctypes.c_uint)
+            u.GetAncestor.restype = wintypes.HWND
+            return int(u.GetAncestor(self.root.winfo_id(), 2) or 0)  # GA_ROOT
+        except Exception:
+            return 0
+
+    def _queue_insert(self, text):
+        """Met `text` en file pour insertion directe, puis tente de l'écrire."""
+        if sys.platform != "win32" or not text:
+            return
+        self._pending_insert += text
+        self._flush_insert()
+
+    def _flush_insert(self):
+        """Écrit le texte en attente dans la fenêtre cible. Sans cible valide
+        (Plume au premier plan, aucune fenêtre…), on garde le texte et on
+        réessaie dès qu'une fenêtre cible reçoit le focus (garde-fou)."""
+        if not self._pending_insert:
+            return
+        if type_text(self._pending_insert, avoid_hwnd=self._own_hwnd()):
+            self._pending_insert = ""
+            if self.model is not None and not self.recording:
+                self.status_var.set(self._ready_status())
+        else:
+            self.status_var.set("⏳ Texte prêt — placez le curseur dans la fenêtre cible")
+            self._schedule_insert_poll()
+
+    def _schedule_insert_poll(self):
+        if self._insert_poll_id is None:
+            self._insert_poll_id = self.root.after(400, self._poll_insert)
+
+    def _poll_insert(self):
+        self._insert_poll_id = None
+        if self._pending_insert:
+            self._flush_insert()
 
     # ----- Sources audio -----
     def _source_summary(self, maxlen=30):
@@ -1261,11 +1317,16 @@ class PlumeApp:
             print(f"[Plume] Modèle prêt en {dt:.1f}s — backend : {backend}",
                   file=sys.stderr)
         elif kind == "result":
-            self._append_text(payload)
-            self._reveal_text_area()
-            self._emit_output(payload)
             self._update_idle_controls()
-            self.status_var.set(self._ready_status())
+            if self.output_mode == "type":
+                # Insertion directe : on n'écrit PAS dans la fenêtre de Plume
+                # (le texte va dans la fenêtre active ; statut géré par _flush_insert).
+                self._emit_output(payload)
+            else:
+                self._append_text(payload)
+                self._reveal_text_area()
+                self._emit_output(payload)
+                self.status_var.set(self._ready_status())
         elif kind == "empty":
             self._update_idle_controls()
             self.status_var.set("Rien à transcrire (enregistrement vide ou trop court).")
@@ -1524,6 +1585,11 @@ class PlumeApp:
             dlg.destroy()
 
     def on_close(self):
+        if self._insert_poll_id is not None:
+            try:
+                self.root.after_cancel(self._insert_poll_id)
+            except Exception:
+                pass
         try:
             self._stop_hotkey()
         except Exception:

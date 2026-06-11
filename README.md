@@ -31,7 +31,7 @@ automatically otherwise.
 - **Microphone and/or system-audio capture** via WASAPI loopback, with multiple sources mixed together (e.g. your mic plus a call).
 - **GPU-accelerated** inference (NVIDIA CUDA, `float16`) with **automatic CPU fallback** (`int8`).
 - **Punctuated French output** with light post-processing and user-defined word corrections (`plume_replacements.json`).
-- **Flexible output**: manual copy, automatic clipboard copy, or direct keystroke insertion into the focused window — triggerable from a **global hotkey** (`Ctrl + Alt + D`).
+- **Flexible output**: manual copy, clipboard auto-copy, or direct keystroke insertion into the active window, paired with a **global hotkey** (`Ctrl + Alt + D`). In insert mode the text is queued and typed only once a valid target window is focused — never into Plume's own window.
 - **Ships as a standalone Windows executable** (PyInstaller), including a lightweight CPU-only build (~250 MB) for machines without an NVIDIA GPU.
 
 ## Tech stack
