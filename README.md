@@ -1,360 +1,183 @@
-# Plume — reconnaissance vocale locale (français)
+# Plume
 
-**Plume** est une application de dictée vocale **100 % locale et hors ligne** (après
-installation). Vous parlez au micro **— ou vous transcrivez le son joué par le PC, ou
-un mélange des deux —** et le texte français apparaît dans une fenêtre, copiable en un
-clic (pratique pour Discord, etc.).
+Local, offline speech-to-text for Windows. Plume captures audio from your microphone
+and/or from what the PC is playing (system loopback), transcribes it on-device with an
+OpenAI Whisper model, and returns punctuated **French** text — ready to copy or to type
+directly into the active window.
 
-- **Transcription** : [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper via CTranslate2)
-- **Capture audio** : [soundcard](https://github.com/bastibe/SoundCard) — micros **et** sorties (loopback WASAPI)
-- **Interface** : `tkinter` (standard), 3 thèmes, rendu DPI-aware, sélecteur de périphériques
-- **Modèle par défaut** : `large-v3`, GPU NVIDIA (CUDA/float16) avec **repli CPU (int8) automatique**
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)
+![GPU](https://img.shields.io/badge/GPU-NVIDIA%20CUDA%2012%20(optional)-76B900?logo=nvidia&logoColor=white)
+<!-- TODO: add a license badge once a LICENSE file is chosen, e.g. ![License](https://img.shields.io/badge/license-MIT-green) -->
 
-> **Tests** : `.venv\Scripts\python test_plume.py` (fonctions pures : ponctuation, corrections).
+> Everything runs locally. After the Whisper model is downloaded once, the application
+> works fully offline and no audio ever leaves the machine.
 
----
+## Overview
 
-## 1. Prérequis
+Plume is a small desktop tool built around a single Tkinter window: pick one or more
+audio sources, press record, and the transcribed text appears in a panel. It is tuned
+for French dictation and preserves the punctuation Whisper infers from intonation and
+pauses. It runs on the GPU when an NVIDIA card is available and falls back to the CPU
+automatically otherwise.
 
-- **Windows 10/11** (la capture audio utilise WASAPI, donc Windows uniquement).
-- **Python 3.10 ou plus** (développé et testé sur **3.13.13**). Cochez « Add Python to PATH » à l'installation.
-- Au moins un **microphone** et/ou une **sortie audio** (pour la capture du son du PC).
-- **Pour le GPU (recommandé)** : carte **NVIDIA** avec pilote récent (testé sur RTX 4090,
-  pilote 596.49). Les bibliothèques CUDA 12 / cuDNN 9 sont installées via `pip` (voir ci-dessous),
-  **aucun CUDA Toolkit système n'est requis**.
-- Sans GPU NVIDIA : l'application fonctionne quand même en **CPU** (plus lent ; voir §6).
+<!-- TODO: add real screenshots under docs/ and update the paths/captions below -->
+![Main window](docs/screenshot-main.png)
+![Audio source selector](docs/screenshot-sources.png)
 
-> Premier lancement : le modèle `large-v3` (~1,5 Go) est téléchargé **une seule fois**
-> dans `C:\Users\<vous>\.cache\huggingface`. Ensuite, tout est hors ligne.
+## Features
 
----
+- **Fully local & offline transcription** — audio is processed on-device; no cloud, no account.
+- **Microphone and/or system-audio capture** via WASAPI loopback, with multiple sources mixed together (e.g. your mic plus a call).
+- **GPU-accelerated** inference (NVIDIA CUDA, `float16`) with **automatic CPU fallback** (`int8`).
+- **Punctuated French output** with light post-processing and user-defined word corrections (`plume_replacements.json`).
+- **Flexible output**: manual copy, automatic clipboard copy, or direct keystroke insertion into the focused window — triggerable from a **global hotkey** (`Ctrl + Alt + D`).
+- **Ships as a standalone Windows executable** (PyInstaller), including a lightweight CPU-only build (~250 MB) for machines without an NVIDIA GPU.
 
-## 2. Installation
+## Tech stack
 
-Dans le dossier du projet, ouvrez PowerShell :
+| Area | Technology |
+|------|------------|
+| Language | Python 3.10+ (developed and tested on 3.13) |
+| Speech-to-text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) running OpenAI Whisper models — default `large-v3` |
+| Audio capture | [soundcard](https://github.com/bastibe/SoundCard) (WASAPI, microphones + output loopback) |
+| Numerics | NumPy |
+| Voice activity detection | onnxruntime (Silero VAD, used when available) |
+| GPU acceleration | CUDA 12 + cuDNN 9, shipped as NVIDIA pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) — **no system CUDA Toolkit required** |
+| GUI | Tkinter (standard library), DPI-aware, custom-drawn widgets, 3 themes |
+| Platform integration | Win32 APIs via `ctypes` (global hotkey, key insertion, dark title bar) |
+| Packaging | PyInstaller (portable Windows build) |
+
+## Getting started
+
+### Prerequisites
+
+- **Windows 10 or 11** — audio capture (WASAPI loopback), the global hotkey, DPI awareness and direct key insertion rely on Windows-only APIs.
+- **Python 3.10+** (tested on 3.13).
+- At least one **microphone** and/or **audio output** to capture.
+- **For GPU acceleration (optional):** an NVIDIA GPU with a recent driver. The CUDA 12 / cuDNN 9 libraries are installed as pip wheels — there is **no need to install the CUDA Toolkit system-wide**. Without an NVIDIA GPU, Plume runs on the CPU automatically.
+
+> On first launch, the selected Whisper model (`large-v3` by default) is downloaded once
+> and cached locally; subsequent runs are fully offline.
+
+### Installation
 
 ```powershell
-# 1. Créer l'environnement virtuel
+# From the project root, in PowerShell
 python -m venv .venv
-
-# 2. Installer les dépendances (cœur + bibliothèques GPU CUDA 12 / cuDNN 9)
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-> ⚠️ Les paquets GPU `nvidia-cublas-cu12` et `nvidia-cudnn-cu12` pèsent **~1,3 Go** :
-> le téléchargement peut être long. Ils sont indispensables pour `device="cuda"`.
-> En cas d'absence ou d'échec, l'application bascule automatiquement sur le CPU.
+> The NVIDIA GPU wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) are large (~1.3 GB);
+> the first install may take a while.
 
-L'environnement (`.venv`) contient déjà tout ; l'installation est déjà faite si vous
-avez reçu le projet monté.
+### Configuration
 
----
+Plume does not use a `.env` file. Behaviour is controlled by environment variables and
+two JSON files.
 
-## 3. Lancement
+Environment variables (all optional):
 
-Trois façons, au choix :
+| Variable | Effect |
+|----------|--------|
+| `PLUME_MODEL` | Whisper model size (e.g. `large-v3`, `medium`, `small`). Default: `large-v3`. |
+| `PLUME_MODEL_DIR` | Directory used to download/cache the model. |
+| `PLUME_DEVICE` | Set to `cpu` to force CPU and skip the GPU path. |
 
-| Méthode | Commande / action | Console visible ? |
-|---|---|---|
-| **Double-clic** | `Plume.vbs` | Non (recommandé) |
-| **Batch** | `lancer.bat` | Non |
-| **Terminal** | `.venv\Scripts\python plume.py` | Oui (utile pour voir les logs) |
+Configuration files:
 
-Pour lancer sans console depuis un terminal :
+| File | Purpose |
+|------|---------|
+| `plume_config.json` | Auto-generated user preferences (theme, selected sources, output mode). Safe to delete to reset. |
+| `plume_replacements.json` | User-defined transcription corrections, e.g. `{ "git eub": "GitHub" }`. Case-insensitive, whole-word; keys starting with `_` are ignored. |
+
+## Usage
+
+### Run (development)
 
 ```powershell
+# With a console (shows logs)
+.venv\Scripts\python plume.py
+
+# Without a console
 .venv\Scripts\pythonw plume.py
 ```
 
-> 💡 Pour faire tourner Plume sur **un autre PC sans y installer Python**, voir
-> **[§10 — Version portable](#10-version-portable-exécutable-windows-autonome)**.
+You can also double-click `Plume.vbs` or `lancer.bat` to start without a console.
 
----
-
-## 4. Utilisation
-
-1. Au démarrage, la fenêtre « Plume » affiche **« Chargement du modèle… »**
-   puis **« Prêt — GPU (CUDA) · <source> »** (ou **CPU** en repli).
-2. Cliquez sur le **gros bouton** pour démarrer l'enregistrement (il devient rouge ⏹).
-3. Cliquez de nouveau pour arrêter : la transcription se lance, la fenêtre s'agrandit
-   et le texte apparaît dans une zone défilante.
-4. **📋 Copier** place tout le texte dans le presse-papiers (collez-le avec `Ctrl+V`).
-5. **Mode ajout** : chaque nouvelle dictée s'**ajoute à la suite** de la précédente
-   (séparée par une espace). Pour repartir de zéro, effacez la zone de texte manuellement.
-
-### Choisir les sources audio (micro, son du PC, ou mix)
-
-Cliquez sur le bouton **🎛 Sources…** : une fenêtre liste tous les périphériques :
-
-- **🎙 Micros / entrées** — tous vos micros et entrées ligne.
-- **🔊 Son du PC (sorties, captées en loopback)** — chaque sortie audio ; la capturer
-  revient à transcrire **ce que joue le PC** sur ce périphérique (vidéo, appel, vocal
-  Discord…).
-
-**Cochez une ou plusieurs sources**, puis **Valider**. Plusieurs sources cochées sont
-**enregistrées en même temps et mélangées** (mix) avant transcription — par exemple
-votre micro **+** le son d'un appel. Le bouton **↻ Actualiser** rafraîchit la liste
-si vous branchez/débranchez un périphérique.
-
-- Le gros bouton affiche une icône **micro** ou **haut-parleur** selon la sélection.
-- Le bouton **🎛 Sources…** et la barre d'état rappellent la sélection courante
-  (nom du périphérique, ou « N sources (mix) »).
-- La sélection est **mémorisée** entre les lancements.
-
-> Notes :
-> - Pour le « son du PC », **lancez d'abord la lecture** puis enregistrez. Seul ce qui
->   est **réellement audible** est capté (une appli en sourdine ne produit rien).
-> - Capturer une sortie casque/HP en loopback **ne coupe pas** votre écoute : vous
->   continuez d'entendre normalement.
-> - Tout est ramené en **16 kHz mono** (format de Whisper) automatiquement.
-
-### Mode de sortie (Manuel / Auto-copie / Insérer)
-
-Sous le bouton, un sélecteur choisit ce qui se passe **après** chaque transcription :
-
-- **Manuel** — rien d'automatique ; vous cliquez **Copier** quand vous voulez.
-- **Auto-copie** — le texte complet est **copié automatiquement** dans le presse-papiers.
-- **Insérer** — le nouveau texte est **tapé directement** dans la fenêtre active
-  (ex. le champ de message Discord), comme si vous l'écriviez au clavier.
-
-> L'« Insérer » est surtout pensé pour le **raccourci global** : vous restez dans
-> Discord, vous dictez, et le texte s'écrit dans Discord. Si vous déclenchez depuis la
-> fenêtre de Plume (qui a alors le focus), le texte irait dans Plume.
-
-### Raccourci clavier global
-
-Vous pouvez **démarrer/arrêter la dictée sans cliquer la fenêtre** (même quand Plume
-est en arrière-plan). Plume essaie plusieurs combinaisons et active la **première
-disponible** ; le raccourci actif est affiché dans la barre d'état (`⌨ …`).
-
-Ordre essayé : **`Ctrl+Alt+D`** (principal), `Ctrl+Maj+Espace`, `Ctrl+Alt+Espace`,
-`Ctrl+Alt+J`, `Ctrl+Alt+F9`. Modifiable via `HOTKEY_CANDIDATES` en haut de `plume.py`
-(`HOTKEY_ENABLED = False` pour le désactiver).
-
-> Workflow type pour Discord : mode **Insérer** + raccourci global → placez le curseur
-> dans le champ de message, pressez le raccourci, parlez, re-pressez : le texte
-> s'écrit dans Discord.
-
-### Effacer & minuterie
-
-- Bouton **Effacer** (à côté de Copier) : vide la zone de texte.
-- Pendant l'enregistrement, la barre d'état affiche un **compteur de durée**
-  (`● Enregistrement… (source)  0:07`).
-
-### Corrections personnalisées
-
-Le fichier **`plume_replacements.json`** (à côté de `plume.py`) corrige automatiquement
-des mots récurrents mal transcrits — utile pour les **pseudos, le jargon, les noms
-propres**. Format :
-
-```json
-{
-  "discorde": "Discord",
-  "git eub": "GitHub",
-  "mon pseudo mal entendu": "MonPseudo"
-}
-```
-
-Insensible à la casse, sur mots entiers. Les clés commençant par `_` sont ignorées
-(pour vos commentaires). Les modifications sont prises en compte à la dictée suivante.
-
-### Thèmes & apparence
-
-- Trois thèmes via les **3 pastilles colorées** en haut à droite : **Sombre** (indigo),
-  **Clair** (bleu) et **Océan** (turquoise). La barre de titre Windows s'assortit.
-- Thème **et** sélection de sources sont **mémorisés** (fichier `plume_config.json`,
-  créé automatiquement à côté de `plume.py`). Supprimez-le pour tout réinitialiser.
-- L'interface est **DPI-aware** : rendu net (non pixelisé) même en mise à l'échelle
-  Windows à 125 %/150 %/200 %.
-
----
-
-## 5. Auto-test
-
-Vérifie le chargement du modèle, le backend (GPU/CPU) et la transcription, **sans ouvrir l'interface** :
+Quick self-test (loads the model, checks the GPU/CPU backend, transcribes a synthetic
+buffer, then exits — no GUI):
 
 ```powershell
 .venv\Scripts\python plume.py --selftest
 ```
 
-Sortie attendue (extrait) :
-
-```
-Backend obtenu          : GPU (CUDA)
-Temps de chargement     : ~12 s (incl. passe de chauffe)
-Transcription (2s)      : ~0.2 s
-=== Auto-test terminé : OK ===
-```
-
-> Le texte renvoyé par l'auto-test sur un signal sinusoïdal peut être vide ou farfelu
-> (ex. « Sous-titrage… ») : c'est normal, l'audio synthétique n'est pas de la parole.
-> Le but est de confirmer le **backend** et le **pipeline**, pas la qualité.
-
----
-
-## 6. Réglages — changer le modèle (`MODEL_SIZE`)
-
-En haut de [`plume.py`](plume.py) :
-
-```python
-SAMPLE_RATE = 16000        # ne pas changer (format attendu par Whisper)
-MODEL_SIZE  = "large-v3"   # voir tableau ci-dessous
-LANGUAGE    = "fr"
-```
-
-**Si le repli CPU est trop lent**, choisissez un modèle plus léger : remplacez
-`large-v3` par, dans l'ordre du plus précis au plus rapide :
-
-| `MODEL_SIZE` | Qualité | Vitesse CPU | VRAM (GPU) |
-|---|---|---|---|
-| `large-v3` | ★★★★★ | lent | ~4–5 Go |
-| `medium`   | ★★★★ | moyen | ~2 Go |
-| `small`    | ★★★ | rapide | ~1 Go |
-| `base`     | ★★ | très rapide | <1 Go |
-
-Sur **RTX 4090**, `large-v3` tourne **plus vite que le temps réel** : gardez-le.
-
-Autres constantes utiles : `BEAM_SIZE` (qualité du décodage), `VAD_FILTER`
-(filtrage des silences, activé si `onnxruntime` est présent).
-
-**Ponctuation** (en haut de `plume.py`) :
-
-- `INITIAL_PROMPT` — court texte bien ponctué qui « conditionne » Whisper à mettre
-  davantage de virgules/points/points d'interrogation. Modifiable.
-- `AUTO_PUNCTUATION` — nettoyage léger en sortie : majuscule initiale, **point final
-  si absent**, espaces corrigés (la ponctuation à la française, ex. « mot ? », est
-  préservée). Mettre `False` pour le texte brut du modèle.
-- `CONDITION_ON_PREVIOUS_TEXT` — cohérence de ponctuation entre segments.
-
-> La ponctuation reste **inférée par le modèle** d'après l'intonation et les pauses :
-> parler en marquant les fins de phrases améliore le résultat. Pour une restauration
-> de ponctuation plus poussée, il faudrait un modèle dédié (lourd) — non inclus pour
-> rester léger.
-
----
-
-## 7. Dépannage CUDA (le point fragile)
-
-Le statut affiche **« Prêt — CPU »** alors que vous avez une carte NVIDIA ?
-Lancez depuis un terminal (`.venv\Scripts\python plume.py`) pour voir la **cause** affichée
-en console (`[Plume] Chargement CUDA échoué -> repli CPU. Cause : …`).
-
-Pistes :
-
-1. **Pilote NVIDIA** présent et à jour :
-   ```powershell
-   nvidia-smi
-   ```
-   doit afficher votre GPU. Sinon, installez/mettez à jour le pilote NVIDIA (GeForce/Studio).
-
-2. **DLL CUDA introuvables** (`Could not load cublas64_12.dll` / `cudnn…`) :
-   vérifiez que les paquets sont installés :
-   ```powershell
-   .venv\Scripts\python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12
-   ```
-   L'application ajoute automatiquement leurs dossiers `…\site-packages\nvidia\*\bin`
-   au chemin de recherche des DLL au démarrage. Si besoin, réinstallez :
-   ```powershell
-   .venv\Scripts\python -m pip install --force-reinstall nvidia-cublas-cu12 nvidia-cudnn-cu12
-   ```
-
-3. **Version de cuDNN** : CTranslate2 4.5+ exige **cuDNN 9** (fourni par `nvidia-cudnn-cu12`
-   ≥ 9.x). Ne mélangez pas avec une vieille cuDNN 8 sur le `PATH` système.
-
-4. **Mémoire GPU saturée** par une autre application : fermez-la, ou passez à un
-   `MODEL_SIZE` plus petit.
-
-Dans tous les cas, **le repli CPU reste fonctionnel** : l'application ne plante pas.
-
----
-
-## 8. Dépannage audio
-
-- **« Aucune source — ouvrez Sources… »** : aucune source n'est cochée. Ouvrez 🎛 Sources…
-  et cochez au moins un périphérique.
-- **Le son du PC ne se transcrit pas** : vérifiez que la lecture est lancée et audible,
-  et que vous avez coché la **bonne sortie** (celle réellement utilisée) dans 🎛 Sources….
-  Utilisez **↻ Actualiser** après un changement de périphérique.
-- **Un périphérique a disparu** de la liste : il a été débranché ; **↻ Actualiser**.
-  Une source mémorisée mais absente est simplement ignorée au démarrage.
-- **Mix déséquilibré** : les sources sont mélangées telles quelles (puis normalisées).
-  Ajustez les volumes Windows de chaque source si l'une couvre l'autre.
-
----
-
-## 9. Limites connues
-
-- **Noms propres, jargon, anglais, bruit de fond** : sources d'erreurs inhérentes à tout
-  moteur STT. Parlez clairement, micro proche.
-- **Hallucinations sur les silences** : limitées par le filtre VAD (activé automatiquement
-  si `onnxruntime` est disponible), pas totalement éliminées.
-- **Mode ajout uniquement** : pas de bouton « Effacer » dans l'interface (effacez à la main).
-- **Mix = alignement au début** : les sources sont synchronisées sur l'instant de départ,
-  pas échantillon par échantillon. Un léger décalage (quelques dizaines de ms) entre
-  sources est sans incidence pour la transcription.
-- **Capture = Windows/WASAPI** via `soundcard`. Sans ce paquet, aucune capture (l'app le
-  signale au démarrage).
-- **Barre de titre Océan** : si Windows affiche la couleur d'accentuation sur les barres
-  de titre, la barre peut prendre cette couleur (cosmétique ; le mode sombre reste actif).
-- **Latence du 1er lancement** : téléchargement du modèle (~1,5 Go), une seule fois.
-
----
-
-## 10. Version portable (exécutable Windows autonome)
-
-Pour utiliser Plume sur **un autre PC Windows sans y installer Python** (clé USB, poste
-d'un ami…), on construit un **exécutable autonome** avec PyInstaller :
+Run the unit tests (pure functions: punctuation, replacements):
 
 ```powershell
-# Une seule fois : installer la dépendance de build
-.venv\Scripts\python -m pip install -r requirements-build.txt
-
-# Construire (quelques minutes ; ~2 Go de DLL CUDA/ffmpeg embarquées)
-.\build_portable.ps1
+.venv\Scripts\python test_plume.py
 ```
 
-Résultat : un dossier **`dist\Plume\`** contenant **`Plume.exe`**. **Copiez ce dossier
-entier** sur la machine cible et lancez `Plume.exe` — aucune installation requise.
+### Build a standalone executable (production)
 
-- **GPU NVIDIA utilisé si présent, repli CPU automatique sinon** : les bibliothèques
-  CUDA sont embarquées dans le paquet (d'où sa taille).
-- **Modèle non embarqué** : il se télécharge **au 1er lancement** dans un dossier
-  `models\` créé **à côté de `Plume.exe`** (connexion internet requise cette première
-  fois). Ensuite l'app est **100 % hors ligne** et le modèle se transporte avec le dossier.
-- **Préférences & corrections** : `plume_config.json` et `plume_replacements.json` sont
-  lus/écrits **à côté de `Plume.exe`** — l'application est entièrement autodescriptive.
+Produces a self-contained Windows app under `dist\` — no Python required on the target
+machine.
 
-> **Pour un PC sans carte NVIDIA — variante allégée** : `.\build_portable.ps1 -Cpu`
-> produit `dist\Plume-CPU\Plume-CPU.exe`, **sans les ~1,3 Go de DLL CUDA** (paquet
-> ~250 Mo au lieu de ~2 Go, zip ~95 Mo), **forcé en CPU** et avec le modèle **`medium`**
-> par défaut (plus rapide que `large-v3` sur CPU, bonne qualité en français). On peut
-> affiner sans recompiler via `PLUME_MODEL` (`small` = plus rapide, `large-v3` = plus
-> précis) et `PLUME_MODEL_DIR` (autre dossier de modèle).
+```powershell
+.venv\Scripts\python -m pip install -r requirements-build.txt
 
-> **Variante de debug** : `.\build_portable.ps1 -Console` produit
-> `dist\Plume-debug\Plume-debug.exe` — **identique mais avec une console** où
-> s'affichent les logs `[Plume] …` (repli CPU, DLL manquante…), pratique pour
-> diagnostiquer un premier lancement. `.\build_portable.ps1 -Both` construit les
-> **deux** variantes côte à côte dans `dist\`.
+.\build_portable.ps1            # windowed app  -> dist\Plume\Plume.exe (GPU + CPU)
+.\build_portable.ps1 -Cpu       # CPU-only build (no CUDA, smaller) -> dist\Plume-CPU\
+.\build_portable.ps1 -Console   # debug build with a console -> dist\Plume-debug\
+.\build_portable.ps1 -Both      # windowed + debug builds, side by side
+```
 
----
+Copy the chosen folder from `dist\` as a whole to the target machine. The Whisper model
+is downloaded next to the executable on first launch.
 
-## 11. Fichiers du projet
+## Project structure
 
-| Fichier | Rôle |
-|---|---|
-| `plume.py` | Application (UI + thèmes + sources + transcription + auto-test `--selftest`). Constantes en haut de fichier. |
-| `requirements.txt` | Dépendances Python (cœur + GPU). |
-| `requirements-build.txt` | Dépendance de build (PyInstaller) pour la version portable. Non requise à l'exécution. |
-| `Plume.spec` | Recette PyInstaller (build de l'exécutable autonome). |
-| `build_portable.ps1` | Script de build de la version portable (`dist\Plume\Plume.exe`). |
-| `plume.ico` | Icône de l'application (EXE + fenêtre / barre des tâches). |
-| `Plume.vbs` | Lanceur double-clic sans console. |
-| `lancer.bat` | Lanceur batch sans console. |
-| `plume_config.json` | Préférences (thème, sources, mode de sortie). Créé automatiquement ; non versionné ; suppressible sans risque. |
-| `plume_replacements.json` | Corrections personnalisées (pseudos, jargon). Éditable. |
-| `test_plume.py` | Tests unitaires des fonctions pures (ponctuation, corrections). |
-| `README.md` | Ce fichier (utilisateur). |
-| `.gitignore` | Exclut `.venv/`, caches, `plume_config.json`, artefacts. |
-| `.venv\` | Environnement virtuel (créé à l'installation). |
+```text
+.
+├── plume.py                 # Application: UI, audio capture, transcription, --selftest
+├── test_plume.py            # Unit tests for pure functions (punctuation, replacements)
+├── requirements.txt         # Runtime dependencies (core + NVIDIA GPU wheels)
+├── requirements-build.txt   # Build-only dependency (PyInstaller)
+├── build_portable.ps1       # Builds the standalone Windows executable(s)
+├── Plume.spec               # PyInstaller build recipe
+├── pyi_rthook_cpu.py        # PyInstaller runtime hook for the CPU-only build
+├── plume.ico                # Application icon
+├── plume_replacements.json  # User-defined transcription corrections (editable)
+├── Plume.vbs                # Double-click launcher (no console)
+└── lancer.bat               # Batch launcher (no console)
+```
+
+`plume.py` is intentionally kept as a single file for trivial deployment; constants and
+tunables sit at the top of the file.
+
+## Roadmap
+
+Implemented:
+
+- Local GPU/CPU transcription of microphone and system audio with multi-source mixing.
+- Output modes (manual / auto-copy / direct insertion) and a global hotkey.
+- Standalone Windows packaging (GPU and CPU-only builds).
+
+Possible future improvements:
+
+- Automatic stop on silence (live VAD on the input stream).
+- In-app language and model-size selector.
+- Recording level (VU) meter.
+- Session history of past dictations.
+
+<!-- TODO: adjust this roadmap to reflect current priorities -->
+
+## License
+
+<!-- TODO: choose and add a LICENSE file (e.g. MIT) and update this section. -->
+No license file is currently included; until one is added, all rights are reserved by the author.
+
+## Author
+
+**Mathis Bensacq** — https://github.com/Mbensacq
