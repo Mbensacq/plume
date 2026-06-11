@@ -21,9 +21,9 @@ for French dictation and preserves the punctuation Whisper infers from intonatio
 pauses. It runs on the GPU when an NVIDIA card is available and falls back to the CPU
 automatically otherwise.
 
-<!-- TODO: add real screenshots under docs/ and update the paths/captions below -->
-![Main window](docs/screenshot-main.png)
-![Audio source selector](docs/screenshot-sources.png)
+![Plume — main window](docs/screenshot-main.png)
+
+<!-- TODO: optional — add a screenshot of the audio source selector as docs/screenshot-sources.png -->
 
 ## Features
 

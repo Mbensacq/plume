@@ -460,25 +460,25 @@ THEME_ORDER = ["Sombre", "Clair", "Océan"]
 DEFAULT_THEME = "Sombre"
 THEMES = {
     "Sombre": {
-        "bg": "#1b1b2b", "surface": "#262639", "elevated": "#2e2e46",
-        "text": "#e9e9f4", "muted": "#9a9ab8",
-        "accent": "#7c6cf0", "accent_hi": "#9183ff", "on_accent": "#ffffff",
-        "danger": "#f0566e", "danger_hi": "#ff6f86",
-        "border": "#363651", "dark_titlebar": True,
+        "bg": "#15151d", "surface": "#1e1e2a", "elevated": "#272736",
+        "text": "#ECEDF5", "muted": "#8B8CA6",
+        "accent": "#7B6CF6", "accent_hi": "#8E80FF", "on_accent": "#ffffff",
+        "danger": "#F0566E", "danger_hi": "#FF6F86",
+        "border": "#2B2B3C", "dark_titlebar": True,
     },
     "Clair": {
-        "bg": "#eceef4", "surface": "#ffffff", "elevated": "#f5f6fa",
-        "text": "#1e2430", "muted": "#6c7384",
-        "accent": "#4f6cf7", "accent_hi": "#3f5ce6", "on_accent": "#ffffff",
-        "danger": "#e5484d", "danger_hi": "#d23b40",
-        "border": "#dde0e9", "dark_titlebar": False,
+        "bg": "#F3F4F8", "surface": "#FFFFFF", "elevated": "#EBEDF4",
+        "text": "#1B2233", "muted": "#697086",
+        "accent": "#4F6CF7", "accent_hi": "#3F5CE6", "on_accent": "#FFFFFF",
+        "danger": "#E5484D", "danger_hi": "#D23B40",
+        "border": "#E2E5EE", "dark_titlebar": False,
     },
     "Océan": {
-        "bg": "#0e2a2f", "surface": "#14393f", "elevated": "#1a474e",
-        "text": "#dff5f1", "muted": "#82b2ae",
-        "accent": "#2dd4bf", "accent_hi": "#46e7d3", "on_accent": "#06302c",
-        "danger": "#ff6b6b", "danger_hi": "#ff8585",
-        "border": "#1e545a", "dark_titlebar": True,
+        "bg": "#0C2A2F", "surface": "#123A40", "elevated": "#18484F",
+        "text": "#DEF5F1", "muted": "#82B2AE",
+        "accent": "#2DD4BF", "accent_hi": "#46E7D3", "on_accent": "#06302C",
+        "danger": "#FF6B6B", "danger_hi": "#FF8585",
+        "border": "#1C525A", "dark_titlebar": True,
     },
 }
 
@@ -804,20 +804,22 @@ class MicButton(tk.Canvas):
         r = s / 2 - max(2, int(3 * self.ui_scale))
 
         if not self._enabled:
-            circle, ring, icon = t["surface"], t["border"], t["muted"]
+            circle, icon = t["surface"], t["muted"]
         elif self._recording:
             circle = t["danger_hi"] if self._hover else t["danger"]
-            ring, icon = circle, "#ffffff"
+            icon = "#ffffff"
         else:
             circle = t["accent_hi"] if self._hover else t["accent"]
-            ring, icon = circle, t["on_accent"]
+            icon = t["on_accent"]
 
-        # halo discret derrière le bouton
-        halo = max(1, int(3 * self.ui_scale))
-        self.create_oval(cx - r - halo, cy - r - halo, cx + r + halo, cy + r + halo,
-                         outline=t["border"], width=1)
+        # anneau discret (piste) qui fait écho à l'état, puis cercle plein net
+        gap = max(2, int(4 * self.ui_scale))
+        track = t["danger"] if self._recording else (
+            t["elevated"] if self._enabled else t["border"])
+        self.create_oval(cx - r - gap, cy - r - gap, cx + r + gap, cy + r + gap,
+                         outline=track, width=max(2, int(2 * self.ui_scale)))
         self.create_oval(cx - r, cy - r, cx + r, cy + r,
-                         fill=circle, outline=ring)
+                         fill=circle, outline=circle)
 
         if self._recording:
             self._draw_stop(cx, cy, icon)
@@ -975,10 +977,11 @@ class PlumeApp:
         self._insert_poll_id = None
 
         # Polices (tailles en points -> mises à l'échelle par tk scaling).
-        self.f_title = ("Segoe UI", 15, "bold")
+        self.f_title = ("Segoe UI Semibold", 16)
+        self.f_subtitle = ("Segoe UI", 9)
         self.f_status = ("Segoe UI", 9)
-        self.f_btn = ("Segoe UI", 10, "bold")
-        self.f_seg = ("Segoe UI", 9, "bold")
+        self.f_btn = ("Segoe UI Semibold", 10)
+        self.f_seg = ("Segoe UI Semibold", 9)
         self.f_text = ("Segoe UI", 11)
 
         root.title("  Plume")
@@ -989,11 +992,11 @@ class PlumeApp:
             except Exception:
                 pass
         root.resizable(False, False)
-        self._compact_geom = f"{self.px(360)}x{self.px(296)}"
-        self._expanded_geom = f"{self.px(360)}x{self.px(556)}"
+        self._compact_geom = f"{self.px(360)}x{self.px(324)}"
+        self._expanded_geom = f"{self.px(360)}x{self.px(584)}"
         root.geometry(self._compact_geom)
         try:
-            root.minsize(self.px(360), self.px(296))
+            root.minsize(self.px(360), self.px(324))
         except Exception:
             pass
 
@@ -1016,19 +1019,24 @@ class PlumeApp:
         self.container = tk.Frame(self.root)
         self.container.pack(fill="both", expand=True)
 
-        # En-tête : titre + sélecteur de thème
+        # En-tête : titre + sous-titre + sélecteur de thème
         self.header = tk.Frame(self.container)
-        self.header.pack(fill="x", padx=pad, pady=(self.px(12), 0))
-        self.title_lbl = tk.Label(self.header, text="Plume", font=self.f_title)
-        self.title_lbl.pack(side="left")
+        self.header.pack(fill="x", padx=pad, pady=(self.px(16), 0))
+        self.title_box = tk.Frame(self.header)
+        self.title_box.pack(side="left")
+        self.title_lbl = tk.Label(self.title_box, text="Plume", font=self.f_title)
+        self.title_lbl.pack(side="top", anchor="w")
+        self.subtitle_lbl = tk.Label(self.title_box, text="dictée vocale locale",
+                                     font=self.f_subtitle)
+        self.subtitle_lbl.pack(side="top", anchor="w")
         self.dots = ThemeDots(self.header, self._on_pick_theme, self.scale)
-        self.dots.pack(side="right")
+        self.dots.pack(side="right", pady=(self.px(5), 0))
 
         # Bouton micro circulaire (centré)
         self.mic_area = tk.Frame(self.container)
-        self.mic_area.pack(fill="x", pady=(self.px(10), 0))
+        self.mic_area.pack(fill="x", pady=(self.px(20), self.px(2)))
         self.mic_btn = MicButton(self.mic_area, self._on_mic,
-                                 size=self.px(86), scale=self.scale)
+                                 size=self.px(92), scale=self.scale)
         self.mic_btn.pack()
 
         # Bouton d'accès au sélecteur de sources (micros / son du PC, mix possible)
@@ -1037,7 +1045,7 @@ class PlumeApp:
             width=self.px(252), height=self.px(34), radius=self.px(10),
             font=self.f_seg, kind="ghost", scale=self.scale,
         )
-        self.sources_btn.pack(pady=(self.px(8), 0))
+        self.sources_btn.pack(pady=(self.px(16), 0))
         self.sources_btn.set_enabled(False)  # activé après énumération des périphériques
 
         # Mode de sortie : manuel / auto-copie / insertion directe
@@ -1048,14 +1056,14 @@ class PlumeApp:
             width=self.px(252), height=self.px(32),
             font=self.f_seg, scale=self.scale,
         )
-        self.output_sel.pack(pady=(self.px(6), 0))
+        self.output_sel.pack(pady=(self.px(8), 0))
         self.output_sel.set_current(self.output_mode)
 
         # Barre d'état
         self.status_var = tk.StringVar(value="Chargement du modèle…")
         self.status_lbl = tk.Label(self.container, textvariable=self.status_var,
                                    font=self.f_status, anchor="center")
-        self.status_lbl.pack(fill="x", pady=(self.px(10), self.px(12)))
+        self.status_lbl.pack(fill="x", pady=(self.px(14), self.px(14)))
 
         # Panneau de texte (caché jusqu'au premier résultat)
         self.text_frame = tk.Frame(self.container)
@@ -1084,7 +1092,9 @@ class PlumeApp:
         self.root.configure(bg=t["bg"])
         self.container.configure(bg=t["bg"])
         self.header.configure(bg=t["bg"])
+        self.title_box.configure(bg=t["bg"])
         self.title_lbl.configure(bg=t["bg"], fg=t["text"])
+        self.subtitle_lbl.configure(bg=t["bg"], fg=t["muted"])
         self.mic_area.configure(bg=t["bg"])
         self.status_lbl.configure(bg=t["bg"], fg=t["muted"])
         self.text_frame.configure(bg=t["bg"])
