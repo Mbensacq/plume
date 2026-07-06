@@ -257,6 +257,31 @@ def apply_replacements(text, repl):
     return text
 
 
+# Phrases « parasites » que Whisper hallucine sur du silence ou du son sans
+# parole : ce sont des génériques de sous-titres de vidéos, vus à l'entraînement.
+# On jette tout segment qui en contient (ex. « Sous-titrage… Amara.org »).
+_HALLUCINATION_RE = re.compile(
+    r"sous[\-\s]?titr"                 # sous-titrage / sous-titres…
+    r"|amara\.org|soustitreur"
+    r"|radio[\-\s]?canada"
+    r"|merci d'avoir regard"           # merci d'avoir regardé (cette vidéo)
+    r"|thanks for watching|subtitl"
+    r"|[♪♫🎵]",
+    re.IGNORECASE,
+)
+
+
+def _join_segments(segments):
+    """Assemble le texte des segments en écartant les hallucinations connues
+    (génériques de sous-titres) que Whisper produit sur du silence."""
+    parts = []
+    for seg in segments:
+        t = seg.text.strip()
+        if t and not _HALLUCINATION_RE.search(t):
+            parts.append(t)
+    return " ".join(parts).strip()
+
+
 def transcribe_audio(model, audio):
     """Transcrit un buffer (np.float32 16 kHz mono) en texte ponctué.
     Centralise les options qui favorisent la ponctuation + les corrections."""
@@ -268,7 +293,7 @@ def transcribe_audio(model, audio):
         initial_prompt=INITIAL_PROMPT or None,
         condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
     )
-    text = " ".join(seg.text.strip() for seg in segments).strip()
+    text = _join_segments(segments)
     text = apply_replacements(text, load_replacements())
     return postprocess_text(text)
 
@@ -294,7 +319,7 @@ def transcribe_stream(model, audio, repl, prompt=None):
         initial_prompt=(prompt or INITIAL_PROMPT) or None,
         condition_on_previous_text=True,
     )
-    text = " ".join(seg.text.strip() for seg in segments).strip()
+    text = _join_segments(segments)
     return apply_replacements(_strip_ellipsis(text), repl)
 
 
