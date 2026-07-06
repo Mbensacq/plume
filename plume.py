@@ -1488,6 +1488,9 @@ class PlumeApp:
                 self.status_var.set(f"Capture indisponible : {e}")
                 print(f"[Plume] Capture indisponible : {e}", file=sys.stderr)
                 return
+            # Nouvel enregistrement -> on repart d'une zone de texte VIDE
+            # (tous les modes : Manuel / Auto-copie / Insérer).
+            self.text.delete("1.0", "end")
             self.recording = True
             self.mic_btn.set_recording(True)
             self.sources_btn.set_enabled(False)
@@ -1496,9 +1499,9 @@ class PlumeApp:
             self._record_start = time.monotonic()
             self._tick_timer()
             if self.live_mode:
-                # Direct : on repart du texte déjà présent (mode ajout) puis on
-                # affine au fil de la parole ; un thread dédié fait le streaming.
-                self._live_prefix = self.text.get("1.0", "end-1c").strip()
+                # Direct : la zone vient d'être vidée ; on affine au fil de la
+                # parole (un thread dédié fait le streaming).
+                self._live_prefix = ""
                 self._live_committed = ""
                 self._live_commit_sample = 0
                 self._reveal_text_area()
