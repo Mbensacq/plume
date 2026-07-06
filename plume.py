@@ -80,10 +80,11 @@ MIN_RECORD_SECONDS = 0.2
 # l'audio depuis le dernier segment « figé » -> charge CPU/GPU linéaire, sans gros
 # pic en fin d'enregistrement, et le texte s'affiche/s'affine au fur et à mesure.
 DEFAULT_LIVE_MODE = False
-LIVE_BEAM_SIZE = 1          # décodage rapide (greedy) pour les passes fréquentes
+LIVE_BEAM_SIZE = BEAM_SIZE   # même qualité que le mode « à l'arrêt »
 LIVE_STEP = 0.6             # intervalle mini entre deux passes (s)
-LIVE_MAX_TAIL = 12.0        # au-delà, on fige la file courante même sans pause (s)
-LIVE_MIN_COMMIT = 1.5       # durée mini d'une file avant de pouvoir la figer (s)
+LIVE_MAX_TAIL = 30.0        # fenêtre révisable LONGUE : on peut revenir loin en arrière
+LIVE_MIN_COMMIT = 6.0       # ne fige pas de trop petits bouts
+LIVE_SILENCE_SEC = 2.0      # durée de silence pour figer (vraie pause, pas une hésitation)
 LIVE_SILENCE_RMS = 0.006    # niveau RMS sous lequel on considère que c'est un silence
 
 # --- Ponctuation ---
@@ -272,20 +273,29 @@ def transcribe_audio(model, audio):
     return postprocess_text(text)
 
 
-def transcribe_stream(model, audio, repl):
-    """Transcription RAPIDE d'un court segment pour l'affichage en direct :
-    décodage greedy (LIVE_BEAM_SIZE), corrections appliquées, SANS post-traitement
-    (pas de majuscule/point forcés : le texte est encore en cours de dictée)."""
+def _strip_ellipsis(text):
+    """Retire les « … » / « ... » en tête et en fin — fréquents sur un extrait
+    coupé en pleine phrase — pour un rendu propre en direct (sans les garder)."""
+    text = re.sub(r"^\s*(?:\.{2,}|…)+\s*", "", text)
+    text = re.sub(r"\s*(?:\.{2,}|…)+\s*$", "", text)
+    return text.strip()
+
+
+def transcribe_stream(model, audio, repl, prompt=None):
+    """Transcription d'un extrait pour l'affichage en direct, à la MÊME qualité
+    que le mode « à l'arrêt » (beam, VAD, contexte). `prompt` = texte déjà figé,
+    redonné pour la continuité. Sans post-traitement (le texte est encore en
+    cours) et sans « … » de fin (extrait volontairement coupé)."""
     segments, _info = model.transcribe(
         audio,
         language=LANGUAGE,
         beam_size=LIVE_BEAM_SIZE,
-        vad_filter=False,
-        initial_prompt=INITIAL_PROMPT or None,
-        condition_on_previous_text=False,
+        vad_filter=VAD_FILTER,
+        initial_prompt=(prompt or INITIAL_PROMPT) or None,
+        condition_on_previous_text=True,
     )
     text = " ".join(seg.text.strip() for seg in segments).strip()
-    return apply_replacements(text, repl)
+    return apply_replacements(_strip_ellipsis(text), repl)
 
 
 def rms(audio):
@@ -1343,14 +1353,21 @@ class PlumeApp:
         if not final and tail.size < int(0.4 * SAMPLE_RATE):
             return  # pas assez de son neuf pour une passe utile
 
+        # Contexte : on redonne le texte déjà figé pour une bonne continuité.
+        prompt = None
+        if self._live_committed:
+            prompt = (INITIAL_PROMPT + " " + self._live_committed[-200:]).strip()
         # File quasi silencieuse -> on ne transcrit pas (évite les hallucinations).
-        text = transcribe_stream(self.model, tail, repl) if rms(tail) >= LIVE_SILENCE_RMS else ""
+        text = (transcribe_stream(self.model, tail, repl, prompt)
+                if rms(tail) >= LIVE_SILENCE_RMS else "")
 
-        # Figer la file ? (fin d'enregistrement, ou pause détectée, ou file trop longue)
+        # On ne FIGE (rend non révisable) que sur une VRAIE pause (silence
+        # prolongé) ou si la fenêtre devient trop longue : une simple hésitation
+        # ne fige rien, tout reste révisable comme en mode « à l'arrêt ».
         commit = final
         if not commit and tail_dur >= LIVE_MIN_COMMIT:
-            last = tail[-int(0.5 * SAMPLE_RATE):]
-            if tail_dur >= LIVE_MAX_TAIL or rms(last) < LIVE_SILENCE_RMS:
+            pause = tail[-int(LIVE_SILENCE_SEC * SAMPLE_RATE):]
+            if tail_dur >= LIVE_MAX_TAIL or (pause.size and rms(pause) < LIVE_SILENCE_RMS):
                 commit = True
         if commit:
             if text:
