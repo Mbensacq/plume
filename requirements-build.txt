@@ -1,6 +1,0 @@
-# Dépendances UNIQUEMENT pour PRODUIRE la version portable (build PyInstaller).
-# NON requises pour exécuter Plume — voir build_portable.ps1 et Plume.spec.
-#
-#   .venv\Scripts\python -m pip install -r requirements-build.txt
-#
-pyinstaller>=6.6

@@ -31,8 +31,8 @@ automatically otherwise.
 - **Microphone and/or system-audio capture** via WASAPI loopback, with multiple sources mixed together (e.g. your mic plus a call).
 - **GPU-accelerated** inference (NVIDIA CUDA, `float16`) with **automatic CPU fallback** (`int8`).
 - **Punctuated French output** with light post-processing and user-defined word corrections (`plume_replacements.json`).
+- **Live transcription (optional)** — instead of waiting for you to press stop, the text is transcribed and refined *as you speak*. Only a bounded, recent window is re-processed on each pass, so CPU/GPU load stays roughly linear and long dictations remain responsive.
 - **Flexible output**: manual copy, clipboard auto-copy, or direct keystroke insertion into the active window, paired with a **global hotkey** (`Ctrl + Alt + D`). In insert mode the text is queued and typed only once a valid target window is focused — never into Plume's own window.
-- **Ships as a standalone Windows executable** (PyInstaller), including a lightweight CPU-only build (~250 MB) for machines without an NVIDIA GPU.
 
 ## Tech stack
 
@@ -46,7 +46,6 @@ automatically otherwise.
 | GPU acceleration | CUDA 12 + cuDNN 9, shipped as NVIDIA pip wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) — **no system CUDA Toolkit required** |
 | GUI | Tkinter (standard library), DPI-aware, custom-drawn widgets, 3 themes |
 | Platform integration | Win32 APIs via `ctypes` (global hotkey, key insertion, dark title bar) |
-| Packaging | PyInstaller (portable Windows build) |
 
 ## Getting started
 
@@ -89,22 +88,25 @@ Configuration files:
 
 | File | Purpose |
 |------|---------|
-| `plume_config.json` | Auto-generated user preferences (theme, selected sources, output mode). Safe to delete to reset. |
+| `plume_config.json` | Auto-generated user preferences (theme, selected sources, output mode, live mode). Safe to delete to reset. |
 | `plume_replacements.json` | User-defined transcription corrections, e.g. `{ "git eub": "GitHub" }`. Case-insensitive, whole-word; keys starting with `_` are ignored. |
 
 ## Usage
 
-### Run (development)
+### Run
 
 ```powershell
-# With a console (shows logs)
-.venv\Scripts\python plume.py
-
-# Without a console
-.venv\Scripts\pythonw plume.py
+.venv\Scripts\python plume.py      # with a console (shows logs)
+.venv\Scripts\pythonw plume.py     # without a console
 ```
 
-You can also double-click `Plume.vbs` or `lancer.bat` to start without a console.
+Or double-click **`Plume.vbs`** (no console); you can pin a Windows shortcut to it for a
+one-click launch. After a `git pull`, just run the command again — re-run the install
+step only if `requirements.txt` changed.
+
+**Live vs. on-stop.** The **En direct / À l'arrêt** switch selects *when* transcription
+happens: *À l'arrêt* transcribes once when you press stop; *En direct* streams the text
+as you speak, refining it in place. The choice is remembered between runs.
 
 Quick self-test (loads the model, checks the GPU/CPU backend, transcribes a synthetic
 buffer, then exits — no GUI):
@@ -119,23 +121,6 @@ Run the unit tests (pure functions: punctuation, replacements):
 .venv\Scripts\python test_plume.py
 ```
 
-### Build a standalone executable (production)
-
-Produces a self-contained Windows app under `dist\` — no Python required on the target
-machine.
-
-```powershell
-.venv\Scripts\python -m pip install -r requirements-build.txt
-
-.\build_portable.ps1            # windowed app  -> dist\Plume\Plume.exe (GPU + CPU)
-.\build_portable.ps1 -Cpu       # CPU-only build (no CUDA, smaller) -> dist\Plume-CPU\
-.\build_portable.ps1 -Console   # debug build with a console -> dist\Plume-debug\
-.\build_portable.ps1 -Both      # windowed + debug builds, side by side
-```
-
-Copy the chosen folder from `dist\` as a whole to the target machine. The Whisper model
-is downloaded next to the executable on first launch.
-
 ## Project structure
 
 ```text
@@ -143,10 +128,6 @@ is downloaded next to the executable on first launch.
 ├── plume.py                 # Application: UI, audio capture, transcription, --selftest
 ├── test_plume.py            # Unit tests for pure functions (punctuation, replacements)
 ├── requirements.txt         # Runtime dependencies (core + NVIDIA GPU wheels)
-├── requirements-build.txt   # Build-only dependency (PyInstaller)
-├── build_portable.ps1       # Builds the standalone Windows executable(s)
-├── Plume.spec               # PyInstaller build recipe
-├── pyi_rthook_cpu.py        # PyInstaller runtime hook for the CPU-only build
 ├── plume.ico                # Application icon
 ├── plume_replacements.json  # User-defined transcription corrections (editable)
 ├── Plume.vbs                # Double-click launcher (no console)
@@ -161,15 +142,15 @@ tunables sit at the top of the file.
 Implemented:
 
 - Local GPU/CPU transcription of microphone and system audio with multi-source mixing.
+- Live (streaming) transcription with bounded, incremental passes.
 - Output modes (manual / auto-copy / direct insertion) and a global hotkey.
-- Standalone Windows packaging (GPU and CPU-only builds).
 
 Possible future improvements:
 
-- Automatic stop on silence (live VAD on the input stream).
 - In-app language and model-size selector.
 - Recording level (VU) meter.
 - Session history of past dictations.
+- Optional standalone Windows executable (packaging) — deferred for now.
 
 <!-- TODO: adjust this roadmap to reflect current priorities -->
 

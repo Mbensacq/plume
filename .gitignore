@@ -5,11 +5,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# --- Build de la version portable (PyInstaller) ---
-build/
-dist/
-Plume-portable*.zip
-# Modèle Whisper téléchargé au 1er lancement (dossier « models/ » à côté de l'app)
+# --- Modèle Whisper (téléchargé au 1er lancement) si redirigé dans le projet ---
 models/
 
 # --- Préférences locales (spécifiques à la machine / l'utilisateur) ---

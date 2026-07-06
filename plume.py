@@ -32,11 +32,8 @@ import importlib.util
 # l'exécutable, que l'on soit lancé comme script .py ou comme .exe PyInstaller)
 # ---------------------------------------------------------------------------
 def _app_dir():
-    """Dossier de base servant d'ancre aux fichiers portables (config,
-    corrections, modèle). Dossier de l'exécutable si l'app est « figée »
-    (PyInstaller), sinon dossier de ce script."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+    """Dossier de base servant d'ancre aux fichiers de l'app (config, corrections,
+    icône) : le dossier de ce script."""
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -44,19 +41,9 @@ APP_DIR = _app_dir()
 
 
 def _icon_path():
-    """Chemin du .ico de l'app s'il est présent (dans le bundle figé en priorité,
-    sinon à côté de l'app). Retourne None si absent."""
-    bases = []
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", "")
-        if meipass:
-            bases.append(meipass)
-    bases.append(APP_DIR)
-    for b in bases:
-        p = os.path.join(b, "plume.ico")
-        if os.path.exists(p):
-            return p
-    return None
+    """Chemin du .ico de l'app s'il est présent à côté du script, sinon None."""
+    p = os.path.join(APP_DIR, "plume.ico")
+    return p if os.path.exists(p) else None
 
 
 # ---------------------------------------------------------------------------
@@ -68,14 +55,9 @@ SAMPLE_RATE = 16000        # Hz — format attendu par Whisper (16 kHz mono)
 MODEL_SIZE = os.environ.get("PLUME_MODEL", "large-v3")
 LANGUAGE = "fr"            # langue forcée
 
-# Dossier de stockage du modèle Whisper (téléchargé au 1er lancement) :
-#  - Exécutable portable (PyInstaller) : « models/ » À CÔTÉ de l'exe -> l'app
-#    reste autonome et 100 % hors-ligne, le modèle se transporte avec elle.
-#  - Lancement comme script .py : None -> cache partagé HuggingFace habituel
-#    (évite de re-télécharger si le modèle y est déjà présent).
-# Surchargeable dans les deux cas via $PLUME_MODEL_DIR.
-MODEL_DIR = os.environ.get("PLUME_MODEL_DIR") or (
-    os.path.join(APP_DIR, "models") if getattr(sys, "frozen", False) else None)
+# Dossier de stockage du modèle Whisper (téléchargé au 1er lancement). Par défaut
+# None -> cache HuggingFace partagé. Surchargeable via $PLUME_MODEL_DIR.
+MODEL_DIR = os.environ.get("PLUME_MODEL_DIR") or None
 
 # Repli CPU : si le chargement/inférence CUDA échoue, on retente en CPU/int8.
 GPU_DEVICE = "cuda"
@@ -83,9 +65,8 @@ GPU_COMPUTE_TYPE = "float16"
 CPU_DEVICE = "cpu"
 CPU_COMPUTE_TYPE = "int8"
 
-# Forcer le CPU (ignorer le GPU) si $PLUME_DEVICE=cpu. Utilisé par le build
-# « allégé » sans CUDA (PC sans carte NVIDIA) : évite une tentative GPU vouée à
-# l'échec et son message d'erreur. Surchargeable à l'exécution.
+# Forcer le CPU (ignorer le GPU) si $PLUME_DEVICE=cpu — utile sur une machine sans
+# carte NVIDIA (évite une tentative GPU vouée à l'échec et son message d'erreur).
 FORCE_CPU = os.environ.get("PLUME_DEVICE", "").strip().lower() == "cpu"
 
 # Qualité de décodage (beam search). 5 = bon compromis qualité/vitesse.
@@ -93,6 +74,17 @@ BEAM_SIZE = 5
 
 # Durée minimale d'un enregistrement (en secondes) pour tenter une transcription.
 MIN_RECORD_SECONDS = 0.2
+
+# --- Transcription en direct (streaming) ---
+# On transcrit en continu une file audio BORNÉE : chaque passe ne traite que
+# l'audio depuis le dernier segment « figé » -> charge CPU/GPU linéaire, sans gros
+# pic en fin d'enregistrement, et le texte s'affiche/s'affine au fur et à mesure.
+DEFAULT_LIVE_MODE = False
+LIVE_BEAM_SIZE = 1          # décodage rapide (greedy) pour les passes fréquentes
+LIVE_STEP = 0.6             # intervalle mini entre deux passes (s)
+LIVE_MAX_TAIL = 12.0        # au-delà, on fige la file courante même sans pause (s)
+LIVE_MIN_COMMIT = 1.5       # durée mini d'une file avant de pouvoir la figer (s)
+LIVE_SILENCE_RMS = 0.006    # niveau RMS sous lequel on considère que c'est un silence
 
 # --- Ponctuation ---
 # Amorce de style : un court texte BIEN ponctué « conditionne » Whisper à
@@ -145,23 +137,14 @@ def _setup_cuda_dll_path():
     Doit être appelé AVANT d'importer faster_whisper / ctranslate2.
     Retourne la liste des répertoires ajoutés (vide si rien trouvé)."""
     added = []
-    bases = []
 
-    # Cas « figé » (PyInstaller) : les DLL nvidia sont collectées DANS le bundle,
-    # sous _internal/nvidia/<sous-paquet>/bin — un dossier que le bootloader
-    # PyInstaller n'ajoute PAS au chemin de recherche des DLL. On le fait ici.
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", "")
-        if meipass:
-            bases.append(os.path.join(meipass, "nvidia"))
-
-    # Installation pip : `nvidia` est un paquet d'espace de noms (PEP 420) : pas
-    # de __file__ ; on parcourt __path__ pour localiser site-packages/nvidia.
+    # `nvidia` est un paquet d'espace de noms (PEP 420) : pas de __file__ ; on
+    # parcourt __path__ pour localiser site-packages/nvidia.
     try:
         import nvidia  # paquets nvidia-cublas-cu12, nvidia-cudnn-cu12, ...
-        bases.extend(getattr(nvidia, "__path__", []))
+        bases = list(getattr(nvidia, "__path__", []))
     except ImportError:
-        pass
+        return added
 
     for base in bases:
         for sub in ("cublas", "cudnn", "cuda_nvrtc"):
@@ -221,8 +204,8 @@ def _try_load(device, compute_type):
     """
     from faster_whisper import WhisperModel
 
-    # download_root : pour l'exe portable, le modèle est stocké à côté de l'app
-    # (cf. MODEL_DIR) ; en script, MODEL_DIR vaut None => cache HuggingFace.
+    # download_root : None (défaut) => cache HuggingFace partagé ; sinon dossier
+    # imposé via $PLUME_MODEL_DIR.
     if MODEL_DIR:
         os.makedirs(MODEL_DIR, exist_ok=True)
     model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute_type,
@@ -287,6 +270,29 @@ def transcribe_audio(model, audio):
     text = " ".join(seg.text.strip() for seg in segments).strip()
     text = apply_replacements(text, load_replacements())
     return postprocess_text(text)
+
+
+def transcribe_stream(model, audio, repl):
+    """Transcription RAPIDE d'un court segment pour l'affichage en direct :
+    décodage greedy (LIVE_BEAM_SIZE), corrections appliquées, SANS post-traitement
+    (pas de majuscule/point forcés : le texte est encore en cours de dictée)."""
+    segments, _info = model.transcribe(
+        audio,
+        language=LANGUAGE,
+        beam_size=LIVE_BEAM_SIZE,
+        vad_filter=False,
+        initial_prompt=INITIAL_PROMPT or None,
+        condition_on_previous_text=False,
+    )
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return apply_replacements(text, repl)
+
+
+def rms(audio):
+    """Énergie RMS d'un buffer float32 (0.0 si vide)."""
+    if audio is None or audio.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
 
 
 def postprocess_text(text):
@@ -407,16 +413,10 @@ class Recorder:
         # NB : pas de CoUninitialize (le thread se termine, COM est nettoyé) ;
         # un CoUninitialize ici pourrait casser le COM partagé de soundcard.
 
-    # ----- arrêt -----
-    def stop(self):
-        """Arrête toutes les captures et retourne l'audio mixé (np.float32, 1D)."""
-        self._running = False
-        for t in self._threads:
-            t.join(timeout=2.0)
-        self._threads = []
-        with self._lock:
-            buffers = self._buffers
-            self._buffers = {}
+    @staticmethod
+    def _mix(buffers):
+        """Mixe les buffers (dict index -> liste d'ndarray) en un signal 1D :
+        somme alignée au début, complétée par des zéros, puis normalisée."""
         arrays = []
         for i in sorted(buffers):
             if buffers[i]:
@@ -427,7 +427,6 @@ class Recorder:
             return np.zeros(0, dtype=np.float32)
         if len(arrays) == 1:
             return arrays[0]
-        # Mix : somme alignée au début + complétée par des zéros, puis normalisée.
         n = max(a.size for a in arrays)
         mix = np.zeros(n, dtype=np.float32)
         for a in arrays:
@@ -436,6 +435,25 @@ class Recorder:
         if peak > 1.0:
             mix /= peak
         return mix
+
+    def snapshot(self):
+        """Retourne l'audio mixé capturé JUSQU'ICI, sans arrêter la capture.
+        Sert à la transcription en direct (streaming)."""
+        with self._lock:
+            buffers = {i: list(v) for i, v in self._buffers.items()}
+        return self._mix(buffers)
+
+    # ----- arrêt -----
+    def stop(self):
+        """Arrête toutes les captures et retourne l'audio mixé (np.float32, 1D)."""
+        self._running = False
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
+        with self._lock:
+            buffers = self._buffers
+            self._buffers = {}
+        return self._mix(buffers)
 
     def close(self):
         """Fermeture défensive (sortie de l'application)."""
@@ -962,6 +980,13 @@ class PlumeApp:
         if self.output_mode not in ("manual", "copy", "type"):
             self.output_mode = DEFAULT_OUTPUT_MODE
 
+        # Transcription en direct (streaming)
+        self.live_mode = bool(cfg.get("live_mode", DEFAULT_LIVE_MODE))
+        self._stream_thread = None
+        self._live_committed = ""    # texte déjà figé pour la dictée en cours
+        self._live_commit_sample = 0  # index audio figé (échantillons)
+        self._live_prefix = ""       # texte déjà présent dans le panneau au départ
+
         # Raccourci clavier global
         self._hotkey_thread = None
         self._hotkey_thread_id = None
@@ -988,11 +1013,11 @@ class PlumeApp:
             except Exception:
                 pass
         root.resizable(False, False)
-        self._compact_geom = f"{self.px(360)}x{self.px(324)}"
-        self._expanded_geom = f"{self.px(360)}x{self.px(584)}"
+        self._compact_geom = f"{self.px(360)}x{self.px(366)}"
+        self._expanded_geom = f"{self.px(360)}x{self.px(620)}"
         root.geometry(self._compact_geom)
         try:
-            root.minsize(self.px(360), self.px(324))
+            root.minsize(self.px(360), self.px(366))
         except Exception:
             pass
 
@@ -1055,6 +1080,17 @@ class PlumeApp:
         self.output_sel.pack(pady=(self.px(8), 0))
         self.output_sel.set_current(self.output_mode)
 
+        # Moment de la transcription : à l'arrêt (fin d'enreg.) ou en direct
+        self.live_sel = SegmentedToggle(
+            self.container,
+            options=[("batch", "À l'arrêt"), ("live", "En direct")],
+            on_change=self._on_live_change,
+            width=self.px(252), height=self.px(32),
+            font=self.f_seg, scale=self.scale,
+        )
+        self.live_sel.pack(pady=(self.px(6), 0))
+        self.live_sel.set_current("live" if self.live_mode else "batch")
+
         # Barre d'état
         self.status_var = tk.StringVar(value="Chargement du modèle…")
         self.status_lbl = tk.Label(self.container, textvariable=self.status_var,
@@ -1105,6 +1141,7 @@ class PlumeApp:
         self.mic_btn.set_theme(t, t["bg"])
         self.sources_btn.set_theme(t, t["bg"])
         self.output_sel.set_theme(t, t["bg"])
+        self.live_sel.set_theme(t, t["bg"])
         self.clear_btn.set_theme(t, t["bg"])
         self.copy_btn.set_theme(t, t["bg"])
         _set_titlebar_dark(self.root, t.get("dark_titlebar", False))
@@ -1117,9 +1154,16 @@ class PlumeApp:
         save_config({
             "theme": self.theme_name,
             "output_mode": self.output_mode,
+            "live_mode": self.live_mode,
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
                         for s in self.selected_sources],
         })
+
+    def _on_live_change(self, key):
+        self.live_mode = (key == "live")
+        self._save_prefs()
+        self.status_var.set("Transcription en direct activée" if self.live_mode
+                            else "Transcription à l'arrêt (fin d'enregistrement)")
 
     def _ready_status(self):
         s = f"Prêt — {self.backend}"
@@ -1270,6 +1314,70 @@ class PlumeApp:
         except Exception as e:
             self.q.put(("error", f"Erreur de transcription : {e}"))
 
+    # ----- Transcription en direct (streaming) -----
+    def _stream_worker(self):
+        """Boucle (thread) qui transcrit en continu la file audio bornée depuis
+        le dernier segment figé, et poste des aperçus. À l'arrêt, fait la passe
+        finale, fige tout, et poste le résultat définitif."""
+        try:
+            repl = load_replacements()
+            while self.recording:
+                self._process_live(self.recorder.snapshot(), repl, final=False)
+                time.sleep(LIVE_STEP)
+            final_audio = self.recorder.stop()
+            errs = self.recorder.consume_errors()
+            if final_audio.size == 0 and errs:
+                self.q.put(("error", "Capture : " + " ; ".join(errs)[:120]))
+                return
+            self._process_live(final_audio, repl, final=True)
+        except Exception as e:
+            self.q.put(("error", f"Erreur transcription en direct : {e}"))
+
+    def _process_live(self, snap, repl, final):
+        """Transcrit la file audio courante (depuis le dernier point figé),
+        décide s'il faut la figer, et poste l'aperçu (ou le résultat final)."""
+        total = int(snap.size)
+        tail = (snap[self._live_commit_sample:] if total > self._live_commit_sample
+                else np.zeros(0, dtype=np.float32))
+        tail_dur = tail.size / SAMPLE_RATE
+        if not final and tail.size < int(0.4 * SAMPLE_RATE):
+            return  # pas assez de son neuf pour une passe utile
+
+        # File quasi silencieuse -> on ne transcrit pas (évite les hallucinations).
+        text = transcribe_stream(self.model, tail, repl) if rms(tail) >= LIVE_SILENCE_RMS else ""
+
+        # Figer la file ? (fin d'enregistrement, ou pause détectée, ou file trop longue)
+        commit = final
+        if not commit and tail_dur >= LIVE_MIN_COMMIT:
+            last = tail[-int(0.5 * SAMPLE_RATE):]
+            if tail_dur >= LIVE_MAX_TAIL or rms(last) < LIVE_SILENCE_RMS:
+                commit = True
+        if commit:
+            if text:
+                self._live_committed = (self._live_committed + " " + text).strip()
+            self._live_commit_sample = total
+            body = self._live_committed
+        else:
+            body = (self._live_committed + " " + text).strip()
+
+        if final:
+            clean = postprocess_text(self._live_committed)
+            self.q.put(("live", (self._join_prefix(clean), True, clean)))
+        else:
+            self.q.put(("live", (self._join_prefix(body), False, None)))
+
+    def _join_prefix(self, body):
+        """Assemble le texte déjà présent au départ (mode ajout) avec le nouveau."""
+        if self._live_prefix and body:
+            return (self._live_prefix + " " + body).strip()
+        return (self._live_prefix or body).strip()
+
+    def _set_text(self, s):
+        """Remplace tout le contenu du panneau (utilisé par la transcription en direct)."""
+        self.text.delete("1.0", "end")
+        self.text.insert("end", s)
+        self.text.see("end")
+
     # ----- Boucle de file (thread principal) -----
     def _pump_queue(self):
         try:
@@ -1287,6 +1395,7 @@ class PlumeApp:
         self.mic_btn.set_enabled(can_record)
         self.sources_btn.set_enabled(self.devices_loaded and not self.recording)
         self.output_sel.set_enabled(not self.recording)
+        self.live_sel.set_enabled(not self.recording)
 
     def _handle(self, kind, payload):
         if kind == "hotkey":
@@ -1322,6 +1431,15 @@ class PlumeApp:
                                 else f"Prêt — {backend}  ·  choisissez une source")
             print(f"[Plume] Modèle prêt en {dt:.1f}s — backend : {backend}",
                   file=sys.stderr)
+        elif kind == "live":
+            display, final, out_text = payload
+            self._reveal_text_area()
+            self._set_text(display)
+            if final:
+                self._update_idle_controls()
+                if out_text:
+                    self._emit_output(out_text)
+                self.status_var.set(self._ready_status())
         elif kind == "result":
             self._update_idle_controls()
             if self.output_mode == "type":
@@ -1357,12 +1475,29 @@ class PlumeApp:
             self.mic_btn.set_recording(True)
             self.sources_btn.set_enabled(False)
             self.output_sel.set_enabled(False)
+            self.live_sel.set_enabled(False)
             self._record_start = time.monotonic()
             self._tick_timer()
+            if self.live_mode:
+                # Direct : on repart du texte déjà présent (mode ajout) puis on
+                # affine au fil de la parole ; un thread dédié fait le streaming.
+                self._live_prefix = self.text.get("1.0", "end-1c").strip()
+                self._live_committed = ""
+                self._live_commit_sample = 0
+                self._reveal_text_area()
+                self._stream_thread = threading.Thread(target=self._stream_worker,
+                                                        daemon=True)
+                self._stream_thread.start()
         else:
             self.recording = False
-            audio = self.recorder.stop()
             self.mic_btn.set_recording(False)
+            if self.live_mode:
+                # Le worker de streaming fait la passe finale (arrête le recorder,
+                # fige le texte, applique la sortie) puis réactive les contrôles.
+                self.mic_btn.set_enabled(False)
+                self.status_var.set("Finalisation…")
+                return
+            audio = self.recorder.stop()
             errs = self.recorder.consume_errors()
             if errs and audio.size == 0:
                 self.status_var.set("Capture : " + " ; ".join(errs)[:120])
