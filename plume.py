@@ -697,6 +697,26 @@ def _aa_mic_image(size, circle, glyph, bg, mode, recording, glow=None):
     return ImageTk.PhotoImage(im.resize((size, size), Image.Resampling.LANCZOS))
 
 
+def _aa_segmented(w, h, n, sel, track_fill, border, hi_fill, bg, pad):
+    """PhotoImage d'un contrôle segmenté : piste arrondie + pastille de sélection
+    dessinée DANS la même image (coins arrondis corrects, jamais carrés au bord)."""
+    if not _PIL_OK or w <= 0 or h <= 0 or n <= 0:
+        return None
+    ss = _SS
+    im = Image.new("RGB", (w * ss, h * ss), _hex_rgb(bg))
+    d = ImageDraw.Draw(im)
+    p = ss
+    d.rounded_rectangle([p, p, w * ss - p, h * ss - p], radius=(h * ss) / 2 - p,
+                        fill=_hex_rgb(track_fill), outline=_hex_rgb(border),
+                        width=max(1, ss))
+    if sel is not None:
+        segw = (w * ss) / n
+        pp = pad * ss
+        box = [sel * segw + pp, pp, (sel + 1) * segw - pp, h * ss - pp]
+        d.rounded_rectangle(box, radius=(h * ss - 2 * pp) / 2, fill=_hex_rgb(hi_fill))
+    return ImageTk.PhotoImage(im.resize((w, h), Image.Resampling.LANCZOS))
+
+
 def type_text(text, avoid_hwnd=None):
     """Tape `text` (Unicode) dans la fenêtre ayant le focus clavier, via
     SendInput. Sert à l'« insertion directe » (ex. écrire dans Discord).
@@ -809,29 +829,24 @@ class SegmentedToggle(tk.Canvas):
             return
         self.delete("all")
         t = self.theme
-        page = self["bg"]
-        self._imgs = []  # garder les références (sinon GC -> images vides)
-        track = _aa_rounded_rect(self.cw, self.ch, self.ch / 2, t["elevated"], page,
-                                 outline=t["border"], outline_w=1)
-        if track is not None:
-            self._imgs.append(track)
-            self.create_image(0, 0, anchor="nw", image=track)
+        pad = max(2, int(2 * self.ui_scale))
+        sel = next((i for i, (k, _) in enumerate(self.options) if k == self.current), None)
+        hi_fill = t["accent"] if self._enabled else t["border"]
+        img = _aa_segmented(self.cw, self.ch, len(self.options), sel,
+                            t["elevated"], t["border"], hi_fill, self["bg"], pad)
+        if img is not None:
+            self._img = img  # référence à conserver
+            self.create_image(0, 0, anchor="nw", image=img)
         else:
             _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
                         fill=t["elevated"], outline=t["border"])
-        pad = max(2, int(2 * self.ui_scale))
+            if sel is not None:
+                x1, y1, x2, y2 = self._seg(sel)
+                _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
+                            (self.ch - 2 * pad) / 2, fill=hi_fill, outline=hi_fill)
         for i, (key, label) in enumerate(self.options):
             x1, y1, x2, y2 = self._seg(i)
             if key == self.current:
-                fill = t["accent"] if self._enabled else t["border"]
-                hi = _aa_rounded_rect(int(x2 - x1 - 2 * pad), int(self.ch - 2 * pad),
-                                      (self.ch - 2 * pad) / 2, fill, t["elevated"])
-                if hi is not None:
-                    self._imgs.append(hi)
-                    self.create_image(int(x1 + pad), int(y1 + pad), anchor="nw", image=hi)
-                else:
-                    _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
-                                (self.ch - 2 * pad) / 2, fill=fill, outline=fill)
                 fg = t["on_accent"] if self._enabled else t["muted"]
             else:
                 fg = t["muted"]
