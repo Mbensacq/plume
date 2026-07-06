@@ -102,20 +102,46 @@ AUTO_PUNCTUATION = True
 # cohérents. (True = défaut de faster-whisper ; explicite ici.)
 CONDITION_ON_PREVIOUS_TEXT = True
 
-# --- Raccourci clavier global (Windows) ---
-# Démarre/arrête la dictée même quand Plume n'est pas au premier plan.
-# On essaie chaque candidat dans l'ordre ; le PREMIER qui s'enregistre est
-# utilisé (un raccourci peut être déjà pris par une autre application).
-# Modificateurs : 1=ALT, 2=CTRL, 4=SHIFT, 8=WIN ; 0x4000 = NOREPEAT.
+# --- Raccourci global (Windows) ---
+# Démarre/arrête la dictée même quand Plume n'est pas au premier plan. Le raccourci
+# est configurable dans les Paramètres (capture au clavier, ou bouton latéral de
+# souris). Modificateurs RegisterHotKey : 1=ALT, 2=CTRL, 4=SHIFT, 8=WIN.
 HOTKEY_ENABLED = True
-_NR = 0x4000
-HOTKEY_CANDIDATES = [
-    (0x0002 | 0x0001 | _NR, 0x44, "Ctrl + Alt + D"),
-    (0x0002 | 0x0004 | _NR, 0x20, "Ctrl + Maj + Espace"),
-    (0x0002 | 0x0001 | _NR, 0x20, "Ctrl + Alt + Espace"),
-    (0x0002 | 0x0001 | _NR, 0x4A, "Ctrl + Alt + J"),
-    (0x0002 | 0x0001 | _NR, 0x78, "Ctrl + Alt + F9"),
-]
+_NR = 0x4000  # MOD_NOREPEAT
+# Raccourci par défaut : Ctrl + Alt + D.
+DEFAULT_HOTKEY = {"type": "key", "mods": 0x0002 | 0x0001, "vk": 0x44,
+                  "label": "Ctrl + Alt + D"}
+
+_VK_NAMES = {0x20: "Espace", 0x0D: "Entrée", 0x09: "Tab", 0x08: "Retour",
+             0x2E: "Suppr", 0x2D: "Inser", 0x24: "Origine", 0x23: "Fin",
+             0x21: "PgPréc", 0x22: "PgSuiv",
+             0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓"}
+
+
+def _vk_name(vk):
+    if vk in _VK_NAMES:
+        return _VK_NAMES[vk]
+    if 0x70 <= vk <= 0x87:            # F1..F24
+        return "F" + str(vk - 0x6F)
+    if 0x30 <= vk <= 0x5A:            # 0-9, A-Z
+        return chr(vk)
+    if 0x60 <= vk <= 0x69:            # pavé numérique 0-9
+        return "Num" + str(vk - 0x60)
+    return f"Touche {vk}"
+
+
+def _hotkey_label(mods, vk):
+    parts = []
+    if mods & 0x0002:
+        parts.append("Ctrl")
+    if mods & 0x0001:
+        parts.append("Alt")
+    if mods & 0x0004:
+        parts.append("Maj")
+    if mods & 0x0008:
+        parts.append("Win")
+    parts.append(_vk_name(vk))
+    return " + ".join(parts)
 
 # --- Sortie après transcription ---
 # "manual" : rien (clic « Copier »). "copy" : copie automatique.
@@ -1230,9 +1256,13 @@ class PlumeApp:
         self._live_commit_sample = 0  # index audio figé (échantillons)
         self._live_prefix = ""       # texte déjà présent dans le panneau au départ
 
-        # Raccourci clavier global
+        # Raccourci global (configurable : clavier ou bouton latéral de souris)
+        self.hotkey = cfg.get("hotkey") or dict(DEFAULT_HOTKEY)
+        if not isinstance(self.hotkey, dict) or "type" not in self.hotkey:
+            self.hotkey = dict(DEFAULT_HOTKEY)
         self._hotkey_thread = None
         self._hotkey_thread_id = None
+        self._hook_proc = None
         self.active_hotkey_label = None
 
         # Insertion directe : texte en attente tant que le curseur n'est pas sur
@@ -1405,6 +1435,7 @@ class PlumeApp:
             "theme": self.theme_name,
             "output_mode": self.output_mode,
             "live_mode": self.live_mode,
+            "hotkey": self.hotkey,
             "custom_profiles": list(self._custom.values()),
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
                         for s in self.selected_sources],
@@ -1543,6 +1574,32 @@ class PlumeApp:
                 dele.pack(side="right")
                 dele.set_theme(t, t["bg"])
 
+        # --- Raccourci global ---
+        tk.Label(dlg, text="Raccourci global", bg=t["bg"], fg=t["muted"],
+                 font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
+                                                   pady=(self.px(16), self.px(4)))
+        cur = self.active_hotkey_label or self.hotkey.get("label", "—")
+        self._hotkey_lbl = tk.Label(dlg, text="Actuel : " + cur, bg=t["bg"],
+                                    fg=t["text"], font=self.f_status, anchor="w")
+        self._hotkey_lbl.pack(fill="x", padx=pad)
+        hkrow = tk.Frame(dlg, bg=t["bg"])
+        hkrow.pack(fill="x", padx=pad, pady=(self.px(6), 0))
+        cap = RoundedButton(hkrow, "⌨  Capturer une touche", self._capture_hotkey_key,
+                            width=self.px(190), height=self.px(30), radius=self.px(9),
+                            font=self.f_seg, kind="ghost", scale=self.scale)
+        cap.pack(side="left")
+        cap.set_theme(t, t["bg"])
+        m1 = RoundedButton(hkrow, "Souris ◄", lambda: self._set_mouse_hotkey("x1"),
+                           width=self.px(78), height=self.px(30), radius=self.px(9),
+                           font=self.f_seg, kind="ghost", scale=self.scale)
+        m1.pack(side="right")
+        m1.set_theme(t, t["bg"])
+        m2 = RoundedButton(hkrow, "Souris ►", lambda: self._set_mouse_hotkey("x2"),
+                           width=self.px(78), height=self.px(30), radius=self.px(9),
+                           font=self.f_seg, kind="ghost", scale=self.scale)
+        m2.pack(side="right", padx=(0, self.px(6)))
+        m2.set_theme(t, t["bg"])
+
         self._settings_status = tk.StringVar(value="")
         tk.Label(dlg, textvariable=self._settings_status, bg=t["bg"], fg=t["muted"],
                  font=self.f_status, anchor="w").pack(fill="x", padx=pad,
@@ -1610,6 +1667,66 @@ class PlumeApp:
             except Exception:
                 pass
             dlg.destroy()
+
+    # ----- Capture / réglage du raccourci -----
+    def _current_mods(self):
+        """Modificateurs physiquement enfoncés -> flags RegisterHotKey (via Win32)."""
+        mods = 0
+        try:
+            import ctypes
+            g = ctypes.windll.user32.GetAsyncKeyState
+            if g(0x11) & 0x8000:                          # Ctrl
+                mods |= 0x0002
+            if g(0x12) & 0x8000:                          # Alt
+                mods |= 0x0001
+            if g(0x10) & 0x8000:                          # Maj
+                mods |= 0x0004
+            if (g(0x5B) & 0x8000) or (g(0x5C) & 0x8000):  # Win
+                mods |= 0x0008
+        except Exception:
+            pass
+        return mods
+
+    def _capture_hotkey_key(self):
+        """Capture la prochaine combinaison clavier appuyée comme raccourci."""
+        dlg = self._settings_dialog
+        if dlg is None:
+            return
+        self._settings_status.set("Appuyez sur la combinaison… (Échap pour annuler)")
+
+        def on_key(e):
+            vk = int(getattr(e, "keycode", 0))
+            if vk in (16, 17, 18, 20, 91, 92, 160, 161, 162, 163, 164, 165):
+                return  # modificateur seul : on attend une vraie touche
+            dlg.unbind("<KeyPress>")
+            if vk == 27:  # Échap
+                self._settings_status.set("Capture annulée.")
+                return
+            mods = self._current_mods()
+            if mods == 0 and not (0x70 <= vk <= 0x87):
+                self._settings_status.set("Ajoutez un modificateur (Ctrl / Alt / Maj / Win).")
+                dlg.bind("<KeyPress>", on_key)
+                return
+            self._set_hotkey({"type": "key", "mods": mods, "vk": vk,
+                              "label": _hotkey_label(mods, vk)})
+
+        dlg.bind("<KeyPress>", on_key)
+        dlg.focus_set()
+
+    def _set_mouse_hotkey(self, button):
+        label = "Souris (Précédent)" if button == "x1" else "Souris (Suivant)"
+        self._set_hotkey({"type": "mouse", "button": button, "label": label})
+
+    def _set_hotkey(self, hk):
+        self.hotkey = hk
+        self._save_prefs()
+        self._restart_hotkey()
+        if self._settings_dialog is not None:
+            try:
+                self._hotkey_lbl.configure(text="Actuel : " + hk["label"])
+                self._settings_status.set(f"Raccourci défini : {hk['label']}")
+            except Exception:
+                pass
 
     def _on_live_change(self, key):
         self.live_mode = (key == "live")
@@ -2005,18 +2122,57 @@ class PlumeApp:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
         self._hotkey_thread_id = kernel32.GetCurrentThreadId()
-        registered = None
-        for mods, vk, label in HOTKEY_CANDIDATES:
-            if user32.RegisterHotKey(None, 1, mods, vk):
-                registered = label
-                break
-        if not registered:
-            print("[Plume] Aucun raccourci global disponible (tous pris ?).",
-                  file=sys.stderr)
+        hk = self.hotkey
+        label = hk.get("label")
+        hook = None
+
+        if hk.get("type") == "mouse":
+            # Bouton latéral de souris : hook bas niveau (le message loop ci-dessous
+            # le fait vivre). XBUTTON1=1 (Précédent), XBUTTON2=2 (Suivant).
+            target = {"x1": 1, "x2": 2}.get(str(hk.get("button", "")), 0)
+
+            class _MSLL(ctypes.Structure):
+                _fields_ = [("pt", wintypes.POINT), ("mouseData", wintypes.DWORD),
+                            ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                            ("dwExtraInfo", ctypes.c_void_p)]
+
+            HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int,
+                                          wintypes.WPARAM, wintypes.LPARAM)
+            # argtypes/restype OBLIGATOIRES en 64 bits (sinon les pointeurs
+            # callback/handle sont tronqués -> SetWindowsHookExW échoue).
+            user32.SetWindowsHookExW.restype = wintypes.HHOOK
+            user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC,
+                                                 wintypes.HINSTANCE, wintypes.DWORD)
+            user32.CallNextHookEx.restype = ctypes.c_ssize_t
+            user32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int,
+                                              wintypes.WPARAM, wintypes.LPARAM)
+            user32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+            kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+            kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+
+            def _proc(n_code, w_param, l_param):
+                if n_code == 0 and w_param == 0x020B:   # HC_ACTION, WM_XBUTTONDOWN
+                    ms = ctypes.cast(l_param, ctypes.POINTER(_MSLL)).contents
+                    if (ms.mouseData >> 16) & 0xFFFF == target:
+                        self.q.put(("hotkey", None))
+                return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+            self._hook_proc = HOOKPROC(_proc)   # garder la référence (sinon crash)
+            hook = user32.SetWindowsHookExW(14, self._hook_proc,        # WH_MOUSE_LL
+                                            kernel32.GetModuleHandleW(None), 0)
+            if not hook:
+                label = None
+        else:
+            mods = int(hk.get("mods", 0)) | _NR
+            if not user32.RegisterHotKey(None, 1, mods, int(hk.get("vk", 0))):
+                label = None
+
+        if not label:
+            print("[Plume] Raccourci global indisponible (déjà pris ?).", file=sys.stderr)
             self.q.put(("hotkey_status", None))
             return
-        self.q.put(("hotkey_status", registered))
-        print(f"[Plume] Raccourci global actif : {registered}", file=sys.stderr)
+        self.q.put(("hotkey_status", label))
+        print(f"[Plume] Raccourci global actif : {label}", file=sys.stderr)
         try:
             msg = wintypes.MSG()
             while True:
@@ -2026,7 +2182,10 @@ class PlumeApp:
                 if msg.message == 0x0312:   # WM_HOTKEY
                     self.q.put(("hotkey", None))
         finally:
-            user32.UnregisterHotKey(None, 1)
+            if hook:
+                user32.UnhookWindowsHookEx(hook)
+            else:
+                user32.UnregisterHotKey(None, 1)
 
     def _stop_hotkey(self):
         if self._hotkey_thread_id:
@@ -2036,6 +2195,17 @@ class PlumeApp:
                     self._hotkey_thread_id, 0x0012, 0, 0)  # WM_QUIT
             except Exception:
                 pass
+
+    def _restart_hotkey(self):
+        """Ré-enregistre le raccourci global après un changement (à chaud)."""
+        self._stop_hotkey()
+        if self._hotkey_thread is not None:
+            try:
+                self._hotkey_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        self._hotkey_thread_id = None
+        self._start_hotkey()
 
     def _append_text(self, new):
         """Mode ajout : ajoute le nouveau texte à la suite (séparé par une espace)."""
