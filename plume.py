@@ -642,58 +642,59 @@ def _aa_rounded_rect(w, h, radius, fill, bg, outline=None, outline_w=0):
     return ImageTk.PhotoImage(im.resize((w, h), Image.Resampling.LANCZOS))
 
 
-def _pil_mic(d, cx, cy, S, col):
-    hw = S * 0.11
-    lw = max(1, int(S * 0.023))
-    d.rounded_rectangle([cx - hw, cy - S * 0.24, cx + hw, cy + S * 0.05], radius=hw, fill=col)
-    d.arc([cx - S * 0.19, cy - S * 0.11, cx + S * 0.19, cy + S * 0.16],
+def _pil_mic(d, cx, cy, R, col):
+    """Pictogramme micro, calé sur le rayon R du disque."""
+    hw = R * 0.28
+    lw = max(1, int(R * 0.06))
+    d.rounded_rectangle([cx - hw, cy - R * 0.61, cx + hw, cy + R * 0.13], radius=hw, fill=col)
+    d.arc([cx - R * 0.49, cy - R * 0.28, cx + R * 0.49, cy + R * 0.41],
           start=20, end=160, fill=col, width=lw)
-    d.line([cx, cy + S * 0.16, cx, cy + S * 0.26], fill=col, width=lw)
-    d.line([cx - S * 0.09, cy + S * 0.26, cx + S * 0.09, cy + S * 0.26], fill=col, width=lw)
+    d.line([cx, cy + R * 0.41, cx, cy + R * 0.66], fill=col, width=lw)
+    d.line([cx - R * 0.23, cy + R * 0.66, cx + R * 0.23, cy + R * 0.66], fill=col, width=lw)
 
 
-def _pil_speaker(d, cx, cy, S, col):
-    xl, xm, xr = cx - S * 0.19, cx - S * 0.03, cx + S * 0.03
-    hs, hb = S * 0.07, S * 0.16
+def _pil_speaker(d, cx, cy, R, col):
+    xl, xm, xr = cx - R * 0.49, cx - R * 0.08, cx + R * 0.08
+    hs, hb = R * 0.18, R * 0.41
     d.polygon([(xl, cy - hs), (xm, cy - hs), (xr, cy - hb),
                (xr, cy + hb), (xm, cy + hs), (xl, cy + hs)], fill=col)
-    lw = max(1, int(S * 0.019))
-    for rr in (S * 0.12, S * 0.19):
-        cxw = cx + S * 0.05
+    lw = max(1, int(R * 0.05))
+    for rr in (R * 0.31, R * 0.49):
+        cxw = cx + R * 0.13
         d.arc([cxw - rr, cy - rr, cxw + rr, cy + rr], start=-52, end=52, fill=col, width=lw)
 
 
-def _pil_stop(d, cx, cy, S, col):
-    dd = S * 0.15
-    d.rounded_rectangle([cx - dd, cy - dd, cx + dd, cy + dd], radius=S * 0.05, fill=col)
+def _pil_stop(d, cx, cy, R, col):
+    dd = R * 0.38
+    d.rounded_rectangle([cx - dd, cy - dd, cx + dd, cy + dd], radius=R * 0.13, fill=col)
 
 
-def _aa_mic_image(size, circle, glyph, bg, mode, recording, glow=None):
-    """PhotoImage du bouton micro : halo doux optionnel + disque + pictogramme,
+def _aa_mic_image(size, circle, glyph, bg, mode, recording, glow=None, glow_strength=130):
+    """PhotoImage du bouton micro : halo lumineux DOUX (son flou s'estompe DANS
+    l'image, donc jamais coupé -> pas de bord droit) + disque + pictogramme,
     le tout anti-aliasé. Retourne None si Pillow indisponible."""
     if not _PIL_OK or size <= 0:
         return None
     ss = _SS
     S = size * ss
     im = Image.new("RGB", (S, S), _hex_rgb(bg))
+    cx = cy = S / 2.0
+    R = S * 0.33  # disque nettement plus petit que l'image -> marge pour le halo
     if glow:
         mask = Image.new("L", (S, S), 0)
-        md = ImageDraw.Draw(mask)
-        pad = int(S * 0.05)
-        md.ellipse([pad, pad, S - pad, S - pad], fill=120)
-        mask = mask.filter(ImageFilter.GaussianBlur(S * 0.055))
+        gr = R * 1.05
+        ImageDraw.Draw(mask).ellipse([cx - gr, cy - gr, cx + gr, cy + gr], fill=glow_strength)
+        mask = mask.filter(ImageFilter.GaussianBlur(R * 0.14))
         im = Image.composite(Image.new("RGB", (S, S), _hex_rgb(glow)), im, mask)
     d = ImageDraw.Draw(im)
-    m = int(S * 0.11)
-    d.ellipse([m, m, S - m, S - m], fill=_hex_rgb(circle))
+    d.ellipse([cx - R, cy - R, cx + R, cy + R], fill=_hex_rgb(circle))
     col = _hex_rgb(glyph)
-    cx = cy = S / 2.0
     if recording:
-        _pil_stop(d, cx, cy, S, col)
+        _pil_stop(d, cx, cy, R, col)
     elif mode == "system":
-        _pil_speaker(d, cx, cy, S, col)
+        _pil_speaker(d, cx, cy, R, col)
     else:
-        _pil_mic(d, cx, cy, S, col)
+        _pil_mic(d, cx, cy, R, col)
     return ImageTk.PhotoImage(im.resize((size, size), Image.Resampling.LANCZOS))
 
 
@@ -980,16 +981,16 @@ class MicButton(tk.Canvas):
         self.delete("all")
         t = self.theme
         if not self._enabled:
-            circle, icon, glow = t["surface"], t["muted"], None
+            circle, icon, glow, gs = t["surface"], t["muted"], None, 0
         elif self._recording:
             circle = t["danger_hi"] if self._hover else t["danger"]
-            icon, glow = "#ffffff", t["danger"]
+            icon, glow, gs = "#ffffff", "#FFFFFF", 165
         else:
             circle = t["accent_hi"] if self._hover else t["accent"]
-            icon, glow = t["on_accent"], (t["accent"] if self._hover else None)
+            icon, glow, gs = t["on_accent"], "#FFFFFF", (150 if self._hover else 100)
 
         img = _aa_mic_image(self.size, circle, icon, self["bg"], self.mode,
-                            self._recording, glow)
+                            self._recording, glow, gs)
         if img is not None:
             self._img = img  # référence à conserver
             self.create_image(0, 0, anchor="nw", image=img)
@@ -1178,11 +1179,11 @@ class PlumeApp:
             except Exception:
                 pass
         root.resizable(False, False)
-        self._compact_geom = f"{self.px(360)}x{self.px(366)}"
-        self._expanded_geom = f"{self.px(360)}x{self.px(620)}"
+        self._compact_geom = f"{self.px(360)}x{self.px(384)}"
+        self._expanded_geom = f"{self.px(360)}x{self.px(638)}"
         root.geometry(self._compact_geom)
         try:
-            root.minsize(self.px(360), self.px(366))
+            root.minsize(self.px(360), self.px(384))
         except Exception:
             pass
 
@@ -1222,7 +1223,7 @@ class PlumeApp:
         self.mic_area = tk.Frame(self.container)
         self.mic_area.pack(fill="x", pady=(self.px(20), self.px(2)))
         self.mic_btn = MicButton(self.mic_area, self._on_mic,
-                                 size=self.px(92), scale=self.scale)
+                                 size=self.px(108), scale=self.scale)
         self.mic_btn.pack()
 
         # Bouton d'accès au sélecteur de sources (micros / son du PC, mix possible)
