@@ -698,9 +698,10 @@ def _aa_mic_image(size, circle, glyph, bg, mode, recording, glow=None, glow_stre
     return ImageTk.PhotoImage(im.resize((size, size), Image.Resampling.LANCZOS))
 
 
-def _aa_segmented(w, h, n, sel, track_fill, border, hi_fill, bg, pad):
+def _aa_segmented(w, h, n, sel_pos, track_fill, border, hi_fill, bg, pad):
     """PhotoImage d'un contrôle segmenté : piste arrondie + pastille de sélection
-    dessinée DANS la même image (coins arrondis corrects, jamais carrés au bord)."""
+    dessinée DANS la même image (coins arrondis corrects). `sel_pos` est un indice
+    FRACTIONNAIRE (float) -> permet d'animer le glissement de la pastille."""
     if not _PIL_OK or w <= 0 or h <= 0 or n <= 0:
         return None
     ss = _SS
@@ -710,10 +711,10 @@ def _aa_segmented(w, h, n, sel, track_fill, border, hi_fill, bg, pad):
     d.rounded_rectangle([p, p, w * ss - p, h * ss - p], radius=(h * ss) / 2 - p,
                         fill=_hex_rgb(track_fill), outline=_hex_rgb(border),
                         width=max(1, ss))
-    if sel is not None:
+    if sel_pos is not None:
         segw = (w * ss) / n
         pp = pad * ss
-        box = [sel * segw + pp, pp, (sel + 1) * segw - pp, h * ss - pp]
+        box = [sel_pos * segw + pp, pp, (sel_pos + 1) * segw - pp, h * ss - pp]
         d.rounded_rectangle(box, radius=(h * ss - 2 * pp) / 2, fill=_hex_rgb(hi_fill))
     return ImageTk.PhotoImage(im.resize((w, h), Image.Resampling.LANCZOS))
 
@@ -805,6 +806,8 @@ class SegmentedToggle(tk.Canvas):
         self.theme = None
         self.current = options[0][0]
         self._enabled = True
+        self._pos = 0.0          # position FRACTIONNAIRE de la pastille (animée)
+        self._anim_id = None
         self.bind("<Button-1>", self._click)
         self.bind("<Motion>", self._motion)
 
@@ -813,9 +816,16 @@ class SegmentedToggle(tk.Canvas):
         self.configure(bg=page_bg)
         self._redraw()
 
+    def _index(self, key):
+        return next((i for i, (k, _) in enumerate(self.options) if k == key), 0)
+
     def set_current(self, key):
         self.current = key
-        self._redraw()
+        target = self._index(key)
+        if self.theme is None:
+            self._pos = float(target)   # pas encore affiché : on cale sans animer
+        else:
+            self._animate_to(target)
 
     def set_enabled(self, on):
         self._enabled = on
@@ -825,15 +835,39 @@ class SegmentedToggle(tk.Canvas):
         w = self.cw / len(self.options)
         return i * w, 0, (i + 1) * w, self.ch
 
+    def _animate_to(self, target):
+        if self._anim_id is not None:
+            try:
+                self.after_cancel(self._anim_id)
+            except Exception:
+                pass
+            self._anim_id = None
+        start, target = self._pos, float(target)
+        steps = 9
+        if abs(target - start) < 0.001:
+            self._pos = target
+            self._redraw()
+            return
+
+        def step(i):
+            f = i / steps
+            f = 1 - (1 - f) ** 3        # ease-out cubique (glissement doux)
+            self._pos = start + (target - start) * f
+            self._redraw()
+            if i < steps:
+                self._anim_id = self.after(16, lambda: step(i + 1))
+            else:
+                self._pos, self._anim_id = target, None
+        step(1)
+
     def _redraw(self):
         if self.theme is None:
             return
         self.delete("all")
         t = self.theme
         pad = max(2, int(2 * self.ui_scale))
-        sel = next((i for i, (k, _) in enumerate(self.options) if k == self.current), None)
         hi_fill = t["accent"] if self._enabled else t["border"]
-        img = _aa_segmented(self.cw, self.ch, len(self.options), sel,
+        img = _aa_segmented(self.cw, self.ch, len(self.options), self._pos,
                             t["elevated"], t["border"], hi_fill, self["bg"], pad)
         if img is not None:
             self._img = img  # référence à conserver
@@ -841,16 +875,13 @@ class SegmentedToggle(tk.Canvas):
         else:
             _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
                         fill=t["elevated"], outline=t["border"])
-            if sel is not None:
-                x1, y1, x2, y2 = self._seg(sel)
-                _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
-                            (self.ch - 2 * pad) / 2, fill=hi_fill, outline=hi_fill)
+            w = self.cw / len(self.options)
+            _round_rect(self, self._pos * w + pad, pad, (self._pos + 1) * w - pad,
+                        self.ch - pad, (self.ch - 2 * pad) / 2, fill=hi_fill, outline=hi_fill)
         for i, (key, label) in enumerate(self.options):
             x1, y1, x2, y2 = self._seg(i)
-            if key == self.current:
-                fg = t["on_accent"] if self._enabled else t["muted"]
-            else:
-                fg = t["muted"]
+            fg = (t["on_accent"] if self._enabled else t["muted"]) if key == self.current \
+                else t["muted"]
             self.create_text((x1 + x2) / 2, self.ch / 2, text=label,
                              fill=fg, font=self.font)
 
@@ -861,7 +892,7 @@ class SegmentedToggle(tk.Canvas):
         key = self.options[i][0]
         if key != self.current:
             self.current = key
-            self._redraw()
+            self._animate_to(i)
             if self.on_change:
                 self.on_change(key)
 
@@ -1694,6 +1725,7 @@ class PlumeApp:
 
     def _on_clear(self):
         self.text.delete("1.0", "end")
+        self._collapse_text_area()   # replie complètement la zone de texte
         self.status_var.set("Texte effacé.")
 
     def _tick_timer(self):
@@ -1764,6 +1796,13 @@ class PlumeApp:
             self.text_frame.pack(fill="both", expand=True)
             self.root.geometry(self._expanded_geom)
             self.text_revealed = True
+
+    def _collapse_text_area(self):
+        """Replie complètement la zone de texte (retour à la fenêtre compacte)."""
+        if self.text_revealed:
+            self.text_frame.pack_forget()
+            self.root.geometry(self._compact_geom)
+            self.text_revealed = False
 
     # ----- Dialogue de sélection des sources -----
     def _refresh_devices(self):
