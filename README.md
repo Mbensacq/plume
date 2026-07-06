@@ -100,9 +100,10 @@ Configuration files:
 .venv\Scripts\pythonw plume.py     # without a console
 ```
 
-Or double-click **`Plume.vbs`** (no console); you can pin a Windows shortcut to it for a
-one-click launch. After a `git pull`, just run the command again — re-run the install
-step only if `requirements.txt` changed.
+Or double-click **`Plume.vbs`** (no console) for a plain launch, or **`lancer.bat`**
+which **auto-updates first** — it runs `git pull` (fast-forward), reinstalls
+dependencies only if `requirements.txt` changed, then starts the app. Both work without
+a network connection (the update step is skipped if git is unavailable or offline).
 
 **Live vs. on-stop.** The **En direct / À l'arrêt** switch selects *when* transcription
 happens: *À l'arrêt* transcribes once when you press stop; *En direct* streams the text
@@ -131,7 +132,7 @@ Run the unit tests (pure functions: punctuation, replacements):
 ├── plume.ico                # Application icon
 ├── plume_replacements.json  # User-defined transcription corrections (editable)
 ├── Plume.vbs                # Double-click launcher (no console)
-└── lancer.bat               # Batch launcher (no console)
+└── lancer.bat               # Auto-updating launcher: git pull, then start the app
 ```
 
 `plume.py` is intentionally kept as a single file for trivial deployment; constants and
