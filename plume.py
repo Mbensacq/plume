@@ -623,6 +623,43 @@ def _hex_rgb(c):
     return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
 
 
+def _mix(c1, c2, t):
+    """Mélange deux couleurs hex (t=0 -> c1, t=1 -> c2)."""
+    a, b = _hex_rgb(c1), _hex_rgb(c2)
+    return "#%02x%02x%02x" % tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+
+def _lum(c):
+    """Luminance perçue (0..1) d'une couleur hex."""
+    r, g, b = _hex_rgb(c)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+
+def _derive_theme(accent, base="dark"):
+    """Dérive une palette complète et harmonieuse à partir d'une couleur d'accent
+    et d'un fond (« dark »/« light »). Sert aux profils de couleurs personnalisés."""
+    accent_hi = _mix(accent, "#ffffff", 0.16)
+    on_accent = "#ffffff" if _lum(accent) < 0.62 else "#12121c"
+    if base == "light":
+        return {
+            "bg": _mix("#F3F4F8", accent, 0.05), "surface": "#FFFFFF",
+            "elevated": _mix("#EBEDF4", accent, 0.06),
+            "text": "#1B2233", "muted": "#697086",
+            "accent": accent, "accent_hi": _mix(accent, "#000000", 0.10),
+            "on_accent": "#FFFFFF",
+            "danger": "#E5484D", "danger_hi": "#D23B40",
+            "border": _mix("#E2E5EE", accent, 0.10), "dark_titlebar": False,
+        }
+    return {
+        "bg": _mix("#14141C", accent, 0.05), "surface": _mix("#1E1E2A", accent, 0.05),
+        "elevated": _mix("#272736", accent, 0.06),
+        "text": "#ECEDF5", "muted": "#8B8CA6",
+        "accent": accent, "accent_hi": accent_hi, "on_accent": on_accent,
+        "danger": "#F0566E", "danger_hi": "#FF6F86",
+        "border": _mix("#2B2B3C", accent, 0.07), "dark_titlebar": True,
+    }
+
+
 def _aa_rounded_rect(w, h, radius, fill, bg, outline=None, outline_w=0):
     """PhotoImage d'un rectangle arrondi anti-aliasé, aplati sur la couleur `bg`
     (bords parfaitement fondus). Retourne None si Pillow indisponible."""
@@ -1015,10 +1052,10 @@ class MicButton(tk.Canvas):
             circle, icon, glow, gs = t["surface"], t["muted"], None, 0
         elif self._recording:
             circle = t["danger_hi"] if self._hover else t["danger"]
-            icon, glow, gs = "#ffffff", "#FFFFFF", 165
+            icon, glow, gs = "#ffffff", t["danger"], (185 if self._hover else 165)
         else:
             circle = t["accent_hi"] if self._hover else t["accent"]
-            icon, glow, gs = t["on_accent"], "#FFFFFF", (150 if self._hover else 100)
+            icon, glow, gs = t["on_accent"], t["accent"], (150 if self._hover else 110)
 
         img = _aa_mic_image(self.size, circle, icon, self["bg"], self.mode,
                             self._recording, glow, gs)
@@ -1151,6 +1188,15 @@ class PlumeApp:
             pass
 
         cfg = load_config()
+
+        # Profils de couleurs personnalisés (accent + fond) : dérivés en palettes
+        # complètes et ajoutés aux thèmes AVANT de résoudre le thème courant / l'UI.
+        self._custom = {}
+        self._settings_dialog = None
+        for prof in cfg.get("custom_profiles", []):
+            self._register_profile(prof.get("name"), prof.get("accent"),
+                                   prof.get("base"), save=False)
+
         self.theme_name = os.environ.get("PLUME_THEME") or cfg.get("theme", DEFAULT_THEME)
         if self.theme_name not in THEMES:
             self.theme_name = DEFAULT_THEME
@@ -1249,6 +1295,10 @@ class PlumeApp:
         self.subtitle_lbl.pack(side="top", anchor="w")
         self.dots = ThemeDots(self.header, self._on_pick_theme, self.scale)
         self.dots.pack(side="right", pady=(self.px(5), 0))
+        self.gear_lbl = tk.Label(self.header, text="⚙", font=("Segoe UI", 14),
+                                 cursor="hand2")
+        self.gear_lbl.pack(side="right", padx=(0, self.px(10)), pady=(self.px(4), 0))
+        self.gear_lbl.bind("<Button-1>", lambda _e: self._open_settings())
 
         # Bouton micro circulaire (centré)
         self.mic_area = tk.Frame(self.container)
@@ -1324,6 +1374,7 @@ class PlumeApp:
         self.title_box.configure(bg=t["bg"])
         self.title_lbl.configure(bg=t["bg"], fg=t["text"])
         self.subtitle_lbl.configure(bg=t["bg"], fg=t["muted"])
+        self.gear_lbl.configure(bg=t["bg"], fg=t["muted"])
         self.mic_area.configure(bg=t["bg"])
         self.status_lbl.configure(bg=t["bg"], fg=t["muted"])
         self.text_frame.configure(bg=t["bg"])
@@ -1344,6 +1395,8 @@ class PlumeApp:
         _set_titlebar_dark(self.root, t.get("dark_titlebar", False))
         if self._sources_dialog is not None:
             self._rebuild_sources_dialog()
+        if self._settings_dialog is not None:
+            self._build_settings()
         if persist:
             self._save_prefs()
 
@@ -1352,9 +1405,211 @@ class PlumeApp:
             "theme": self.theme_name,
             "output_mode": self.output_mode,
             "live_mode": self.live_mode,
+            "custom_profiles": list(self._custom.values()),
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
                         for s in self.selected_sources],
         })
+
+    # ----- Profils de couleurs personnalisés -----
+    def _register_profile(self, name, accent, base, save=True):
+        """Dérive et enregistre un profil (accent + fond) dans les thèmes."""
+        name = (name or "").strip()
+        base = base if base in ("dark", "light") else "dark"
+        if not name or not isinstance(accent, str) or not accent.startswith("#"):
+            return False
+        try:
+            THEMES[name] = _derive_theme(accent, base)
+        except Exception:
+            return False
+        if name not in THEME_ORDER:
+            THEME_ORDER.append(name)
+        self._custom[name] = {"name": name, "accent": accent, "base": base}
+        if save:
+            self._save_prefs()
+        return True
+
+    def _rebuild_dots(self):
+        """Reconstruit les pastilles de thème (après ajout/suppression de profil)."""
+        try:
+            self.dots.destroy()
+        except Exception:
+            pass
+        self.dots = ThemeDots(self.header, self._on_pick_theme, self.scale)
+        self.dots.pack(side="right", pady=(self.px(5), 0))
+        self.dots.render(self.theme_name, self.theme["bg"])
+
+    # ----- Fenêtre de paramètres -----
+    def _open_settings(self):
+        if self._settings_dialog is not None:
+            try:
+                self._settings_dialog.lift()
+            except Exception:
+                pass
+            return
+        t = self.theme
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Paramètres")
+        dlg.configure(bg=t["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        try:
+            dlg.geometry(f"+{self.root.winfo_rootx() + self.px(30)}"
+                         f"+{self.root.winfo_rooty() + self.px(40)}")
+        except Exception:
+            pass
+        dlg.protocol("WM_DELETE_WINDOW", self._close_settings)
+        self._settings_dialog = dlg
+        self._new_accent = self.theme["accent"]
+        self.root.update_idletasks()
+        _set_titlebar_dark(dlg, t.get("dark_titlebar", False))
+        self._build_settings()
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+
+    def _build_settings(self):
+        dlg = self._settings_dialog
+        if dlg is None:
+            return
+        t = self.theme
+        dlg.configure(bg=t["bg"])
+        for w in dlg.winfo_children():
+            w.destroy()
+        self._settings_imgs = []   # garder les références d'images (sinon GC)
+        pad = self.px(16)
+        tk.Label(dlg, text="Paramètres", bg=t["bg"], fg=t["text"],
+                 font=self.f_title).pack(anchor="w", padx=pad, pady=(self.px(14), 0))
+
+        tk.Label(dlg, text="Nouveau profil de couleurs", bg=t["bg"], fg=t["muted"],
+                 font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
+                                                   pady=(self.px(12), self.px(6)))
+        row = tk.Frame(dlg, bg=t["bg"])
+        row.pack(fill="x", padx=pad)
+        self._swatch = tk.Canvas(row, width=self.px(30), height=self.px(30),
+                                 highlightthickness=0, bd=0, bg=t["bg"], cursor="hand2")
+        self._swatch.pack(side="left")
+        self._swatch.bind("<Button-1>", lambda _e: self._pick_accent())
+        self._paint_swatch()
+        pick = RoundedButton(row, "Couleur d'accent…", self._pick_accent,
+                             width=self.px(154), height=self.px(30), radius=self.px(9),
+                             font=self.f_seg, kind="ghost", scale=self.scale)
+        pick.pack(side="left", padx=(self.px(8), 0))
+        pick.set_theme(t, t["bg"])
+
+        self._base_sel = SegmentedToggle(
+            dlg, options=[("dark", "Sombre"), ("light", "Clair")], on_change=None,
+            width=self.px(200), height=self.px(30), font=self.f_seg, scale=self.scale)
+        self._base_sel.pack(anchor="w", padx=pad, pady=(self.px(8), 0))
+        self._base_sel.set_theme(t, t["bg"])
+        self._base_sel.set_current("light" if _lum(t["bg"]) > 0.5 else "dark")
+
+        nrow = tk.Frame(dlg, bg=t["bg"])
+        nrow.pack(fill="x", padx=pad, pady=(self.px(8), 0))
+        self._name_var = tk.StringVar(value="Mon profil")
+        ent = tk.Entry(nrow, textvariable=self._name_var, font=self.f_status,
+                       bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                       relief="flat", highlightthickness=1,
+                       highlightbackground=t["border"], highlightcolor=t["accent"])
+        ent.pack(side="left", fill="x", expand=True, ipady=self.px(4))
+        create = RoundedButton(nrow, "Créer", self._settings_create, width=self.px(90),
+                               height=self.px(30), radius=self.px(9), font=self.f_btn,
+                               kind="accent", scale=self.scale)
+        create.pack(side="right", padx=(self.px(8), 0))
+        create.set_theme(t, t["bg"])
+
+        if self._custom:
+            tk.Label(dlg, text="Profils personnalisés", bg=t["bg"], fg=t["muted"],
+                     font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
+                                                       pady=(self.px(14), self.px(4)))
+            for pname in list(self._custom):
+                pr = tk.Frame(dlg, bg=t["bg"])
+                pr.pack(fill="x", padx=pad, pady=(0, self.px(4)))
+                sw = tk.Canvas(pr, width=self.px(18), height=self.px(18),
+                               highlightthickness=0, bd=0, bg=t["bg"])
+                sw.pack(side="left")
+                img = _aa_rounded_rect(self.px(18), self.px(18), self.px(9),
+                                       self._custom[pname]["accent"], t["bg"])
+                if img is not None:
+                    self._settings_imgs.append(img)
+                    sw.create_image(0, 0, anchor="nw", image=img)
+                tk.Label(pr, text="  " + pname, bg=t["bg"], fg=t["text"],
+                         font=self.f_status, anchor="w").pack(side="left")
+                dele = RoundedButton(pr, "Supprimer",
+                                     lambda n=pname: self._delete_profile(n),
+                                     width=self.px(92), height=self.px(26),
+                                     radius=self.px(8), font=self.f_seg, kind="ghost",
+                                     scale=self.scale)
+                dele.pack(side="right")
+                dele.set_theme(t, t["bg"])
+
+        self._settings_status = tk.StringVar(value="")
+        tk.Label(dlg, textvariable=self._settings_status, bg=t["bg"], fg=t["muted"],
+                 font=self.f_status, anchor="w").pack(fill="x", padx=pad,
+                                                      pady=(self.px(10), 0))
+        bar = tk.Frame(dlg, bg=t["bg"])
+        bar.pack(fill="x", padx=pad, pady=(self.px(8), self.px(14)))
+        close = RoundedButton(bar, "Fermer", self._close_settings, width=self.px(110),
+                              height=self.px(34), radius=self.px(10), font=self.f_btn,
+                              kind="ghost", scale=self.scale)
+        close.pack(side="right")
+        close.set_theme(t, t["bg"])
+
+    def _paint_swatch(self):
+        c = self._swatch
+        c.delete("all")
+        w = self.px(30)
+        img = _aa_rounded_rect(w, w, self.px(9), self._new_accent, self.theme["bg"])
+        if img is not None:
+            self._swatch_img = img
+            c.create_image(0, 0, anchor="nw", image=img)
+        else:
+            _round_rect(c, 1, 1, w - 1, w - 1, self.px(9),
+                        fill=self._new_accent, outline=self._new_accent)
+
+    def _pick_accent(self):
+        from tkinter import colorchooser
+        if self._settings_dialog is None:
+            return
+        res = colorchooser.askcolor(color=self._new_accent, parent=self._settings_dialog,
+                                    title="Couleur d'accent")
+        if res and res[1]:
+            self._new_accent = res[1]
+            self._paint_swatch()
+
+    def _settings_create(self):
+        name = self._name_var.get().strip()
+        if not name:
+            self._settings_status.set("Donnez un nom au profil.")
+            return
+        if self._register_profile(name, self._new_accent, self._base_sel.current):
+            self._rebuild_dots()
+            self.apply_theme(name)        # applique + persiste + reconstruit le dialogue
+            self._settings_status.set(f"Profil « {name} » créé et appliqué.")
+        else:
+            self._settings_status.set("Profil invalide.")
+
+    def _delete_profile(self, name):
+        self._custom.pop(name, None)
+        if name in THEME_ORDER and name not in ("Sombre", "Clair", "Océan"):
+            THEME_ORDER.remove(name)
+        THEMES.pop(name, None)
+        self._rebuild_dots()
+        self._save_prefs()
+        if self.theme_name == name:
+            self.apply_theme(DEFAULT_THEME)
+        else:
+            self._build_settings()
+
+    def _close_settings(self):
+        dlg = self._settings_dialog
+        self._settings_dialog = None
+        if dlg is not None:
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            dlg.destroy()
 
     def _on_live_change(self, key):
         self.live_mode = (key == "live")
