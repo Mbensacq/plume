@@ -506,6 +506,19 @@ class Recorder:
 # ===========================================================================
 import tkinter as tk  # noqa: E402
 
+# Pillow : rendu anti-aliasé des formes de l'UI (cercles, coins arrondis) via
+# supersampling. Optionnel : si absent, on retombe sur le dessin Canvas natif.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:  # pour l'analyse de types : les noms sont vus comme définis
+    from PIL import Image, ImageDraw, ImageTk, ImageFilter
+try:
+    from PIL import Image, ImageDraw, ImageTk, ImageFilter  # noqa: E402
+    _PIL_OK = True
+except Exception:
+    _PIL_OK = False
+
+_SS = 4  # facteur de supersampling (dessin en grand puis réduction lissée)
+
 CONFIG_PATH = os.path.join(APP_DIR, "plume_config.json")
 
 # --- Palettes de thèmes -----------------------------------------------------
@@ -602,6 +615,86 @@ def _round_rect(canvas, x1, y1, x2, y2, r, **kw):
         x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
     ]
     return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+# --- Rendu anti-aliasé (Pillow) : formes lisses aplaties sur le fond ---------
+def _hex_rgb(c):
+    c = c.lstrip("#")
+    return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+
+
+def _aa_rounded_rect(w, h, radius, fill, bg, outline=None, outline_w=0):
+    """PhotoImage d'un rectangle arrondi anti-aliasé, aplati sur la couleur `bg`
+    (bords parfaitement fondus). Retourne None si Pillow indisponible."""
+    if not _PIL_OK or w <= 0 or h <= 0:
+        return None
+    ss = _SS
+    im = Image.new("RGB", (w * ss, h * ss), _hex_rgb(bg))
+    d = ImageDraw.Draw(im)
+    pad = ss
+    box = [pad, pad, w * ss - pad, h * ss - pad]
+    r = max(0, min(radius * ss, (w * ss) / 2 - pad, (h * ss) / 2 - pad))
+    if outline and outline_w:
+        d.rounded_rectangle(box, radius=r, fill=_hex_rgb(fill),
+                            outline=_hex_rgb(outline), width=max(1, int(outline_w * ss)))
+    else:
+        d.rounded_rectangle(box, radius=r, fill=_hex_rgb(fill))
+    return ImageTk.PhotoImage(im.resize((w, h), Image.Resampling.LANCZOS))
+
+
+def _pil_mic(d, cx, cy, S, col):
+    hw = S * 0.11
+    lw = max(1, int(S * 0.023))
+    d.rounded_rectangle([cx - hw, cy - S * 0.24, cx + hw, cy + S * 0.05], radius=hw, fill=col)
+    d.arc([cx - S * 0.19, cy - S * 0.11, cx + S * 0.19, cy + S * 0.16],
+          start=20, end=160, fill=col, width=lw)
+    d.line([cx, cy + S * 0.16, cx, cy + S * 0.26], fill=col, width=lw)
+    d.line([cx - S * 0.09, cy + S * 0.26, cx + S * 0.09, cy + S * 0.26], fill=col, width=lw)
+
+
+def _pil_speaker(d, cx, cy, S, col):
+    xl, xm, xr = cx - S * 0.19, cx - S * 0.03, cx + S * 0.03
+    hs, hb = S * 0.07, S * 0.16
+    d.polygon([(xl, cy - hs), (xm, cy - hs), (xr, cy - hb),
+               (xr, cy + hb), (xm, cy + hs), (xl, cy + hs)], fill=col)
+    lw = max(1, int(S * 0.019))
+    for rr in (S * 0.12, S * 0.19):
+        cxw = cx + S * 0.05
+        d.arc([cxw - rr, cy - rr, cxw + rr, cy + rr], start=-52, end=52, fill=col, width=lw)
+
+
+def _pil_stop(d, cx, cy, S, col):
+    dd = S * 0.15
+    d.rounded_rectangle([cx - dd, cy - dd, cx + dd, cy + dd], radius=S * 0.05, fill=col)
+
+
+def _aa_mic_image(size, circle, glyph, bg, mode, recording, glow=None):
+    """PhotoImage du bouton micro : halo doux optionnel + disque + pictogramme,
+    le tout anti-aliasé. Retourne None si Pillow indisponible."""
+    if not _PIL_OK or size <= 0:
+        return None
+    ss = _SS
+    S = size * ss
+    im = Image.new("RGB", (S, S), _hex_rgb(bg))
+    if glow:
+        mask = Image.new("L", (S, S), 0)
+        md = ImageDraw.Draw(mask)
+        pad = int(S * 0.05)
+        md.ellipse([pad, pad, S - pad, S - pad], fill=120)
+        mask = mask.filter(ImageFilter.GaussianBlur(S * 0.055))
+        im = Image.composite(Image.new("RGB", (S, S), _hex_rgb(glow)), im, mask)
+    d = ImageDraw.Draw(im)
+    m = int(S * 0.11)
+    d.ellipse([m, m, S - m, S - m], fill=_hex_rgb(circle))
+    col = _hex_rgb(glyph)
+    cx = cy = S / 2.0
+    if recording:
+        _pil_stop(d, cx, cy, S, col)
+    elif mode == "system":
+        _pil_speaker(d, cx, cy, S, col)
+    else:
+        _pil_mic(d, cx, cy, S, col)
+    return ImageTk.PhotoImage(im.resize((size, size), Image.Resampling.LANCZOS))
 
 
 def type_text(text, avoid_hwnd=None):
@@ -716,15 +809,29 @@ class SegmentedToggle(tk.Canvas):
             return
         self.delete("all")
         t = self.theme
-        _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
-                    fill=t["elevated"], outline=t["border"])
+        page = self["bg"]
+        self._imgs = []  # garder les références (sinon GC -> images vides)
+        track = _aa_rounded_rect(self.cw, self.ch, self.ch / 2, t["elevated"], page,
+                                 outline=t["border"], outline_w=1)
+        if track is not None:
+            self._imgs.append(track)
+            self.create_image(0, 0, anchor="nw", image=track)
+        else:
+            _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.ch / 2,
+                        fill=t["elevated"], outline=t["border"])
         pad = max(2, int(2 * self.ui_scale))
         for i, (key, label) in enumerate(self.options):
             x1, y1, x2, y2 = self._seg(i)
             if key == self.current:
                 fill = t["accent"] if self._enabled else t["border"]
-                _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
-                            (self.ch - 2 * pad) / 2, fill=fill, outline=fill)
+                hi = _aa_rounded_rect(int(x2 - x1 - 2 * pad), int(self.ch - 2 * pad),
+                                      (self.ch - 2 * pad) / 2, fill, t["elevated"])
+                if hi is not None:
+                    self._imgs.append(hi)
+                    self.create_image(int(x1 + pad), int(y1 + pad), anchor="nw", image=hi)
+                else:
+                    _round_rect(self, x1 + pad, y1 + pad, x2 - pad, y2 - pad,
+                                (self.ch - 2 * pad) / 2, fill=fill, outline=fill)
                 fg = t["on_accent"] if self._enabled else t["muted"]
             else:
                 fg = t["muted"]
@@ -792,8 +899,13 @@ class RoundedButton(tk.Canvas):
             return
         self.delete("all")
         fill, fg = self._palette(t)
-        _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.radius,
-                    fill=fill, outline=fill)
+        img = _aa_rounded_rect(self.cw, self.ch, self.radius, fill, self["bg"])
+        if img is not None:
+            self._img = img  # référence à conserver (sinon GC -> bouton vide)
+            self.create_image(0, 0, anchor="nw", image=img)
+        else:
+            _round_rect(self, 1, 1, self.cw - 1, self.ch - 1, self.radius,
+                        fill=fill, outline=fill)
         self.create_text(self.cw / 2, self.ch / 2, text=self.text,
                          fill=fg, font=self.font)
 
@@ -852,24 +964,27 @@ class MicButton(tk.Canvas):
             return
         self.delete("all")
         t = self.theme
+        if not self._enabled:
+            circle, icon, glow = t["surface"], t["muted"], None
+        elif self._recording:
+            circle = t["danger_hi"] if self._hover else t["danger"]
+            icon, glow = "#ffffff", t["danger"]
+        else:
+            circle = t["accent_hi"] if self._hover else t["accent"]
+            icon, glow = t["on_accent"], (t["accent"] if self._hover else None)
+
+        img = _aa_mic_image(self.size, circle, icon, self["bg"], self.mode,
+                            self._recording, glow)
+        if img is not None:
+            self._img = img  # référence à conserver
+            self.create_image(0, 0, anchor="nw", image=img)
+            return
+
+        # Repli sans Pillow : dessin Canvas natif.
         s = self.size
         cx = cy = s / 2
         r = s / 2 - max(2, int(3 * self.ui_scale))
-
-        if not self._enabled:
-            circle, icon = t["surface"], t["muted"]
-        elif self._recording:
-            circle = t["danger_hi"] if self._hover else t["danger"]
-            icon = "#ffffff"
-        else:
-            circle = t["accent_hi"] if self._hover else t["accent"]
-            icon = t["on_accent"]
-
-        # Disque plein unique : sur un Canvas Tk (sans anti-aliasing), un fin
-        # liseré paraît « coupé »/pas rond -> on ne dessine que le disque, net.
-        self.create_oval(cx - r, cy - r, cx + r, cy + r,
-                         fill=circle, outline=circle)
-
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=circle, outline=circle)
         if self._recording:
             self._draw_stop(cx, cy, icon)
         elif self.mode == "system":
@@ -989,7 +1104,7 @@ class PlumeApp:
             pass
 
         cfg = load_config()
-        self.theme_name = cfg.get("theme", DEFAULT_THEME)
+        self.theme_name = os.environ.get("PLUME_THEME") or cfg.get("theme", DEFAULT_THEME)
         if self.theme_name not in THEMES:
             self.theme_name = DEFAULT_THEME
         self.theme = THEMES[self.theme_name]
