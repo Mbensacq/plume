@@ -324,6 +324,53 @@ def transcribe_audio(model, audio):
     return postprocess_text(text)
 
 
+# --- Mode IA : reformulation par un LLM LOCAL (Ollama) ----------------------
+# 100 % local : Plume dialogue avec le serveur Ollama sur la machine (localhost).
+# Surchargeable via $PLUME_AI_URL / $PLUME_AI_MODEL.
+AI_URL = os.environ.get("PLUME_AI_URL") or "http://localhost:11434"
+AI_MODEL_DEFAULT = os.environ.get("PLUME_AI_MODEL") or "llama3.1:8b"
+AI_SYSTEM = (
+    "Tu es un assistant d'écriture en français. On te donne une dictée brute "
+    "(un brouillon, parfois mal formulé, avec des fautes). Réécris-la en un texte "
+    "clair, naturel et bien tourné : corrige l'orthographe, la grammaire et la "
+    "ponctuation, structure les phrases proprement, MAIS conserve le sens, les "
+    "informations et le ton d'origine, sans rien inventer ni ajouter de commentaire. "
+    "Réponds UNIQUEMENT par le texte réécrit, sans préambule ni guillemets."
+)
+
+
+class AIError(Exception):
+    """Erreur explicite du mode IA (message déjà prêt pour l'utilisateur)."""
+
+
+def ai_reformulate(text, model, url=None, timeout=120):
+    """Reformule `text` via un LLM local Ollama (endpoint /api/chat).
+    Lève AIError avec un message clair si Ollama est injoignable ou le modèle absent."""
+    import urllib.request
+    import urllib.error
+    base = (url or AI_URL).rstrip("/")
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "system", "content": AI_SYSTEM},
+                     {"role": "user", "content": text}],
+        "stream": False,
+        "options": {"temperature": 0.4},
+    }).encode("utf-8")
+    req = urllib.request.Request(base + "/api/chat", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise AIError(f"Modèle IA « {model} » absent — faites : ollama pull {model}")
+        raise AIError(f"IA : erreur Ollama ({e.code}).")
+    except Exception:
+        raise AIError("IA : Ollama injoignable — installez-le et lancez-le "
+                      "(ollama.com), puis « ollama pull " + str(model) + " ».")
+    return (data.get("message", {}) or {}).get("content", "").strip()
+
+
 def _strip_ellipsis(text):
     """Retire les « … » / « ... » en tête et en fin — fréquents sur un extrait
     coupé en pleine phrase — pour un rendu propre en direct (sans les garder)."""
@@ -1256,6 +1303,10 @@ class PlumeApp:
         self._live_commit_sample = 0  # index audio figé (échantillons)
         self._live_prefix = ""       # texte déjà présent dans le panneau au départ
 
+        # Mode IA : reformulation par un LLM local (Ollama) après la dictée
+        self.ai_mode = bool(cfg.get("ai_mode", False))
+        self.ai_model = cfg.get("ai_model") or AI_MODEL_DEFAULT
+
         # Raccourci global (configurable : clavier ou bouton latéral de souris)
         self.hotkey = cfg.get("hotkey") or dict(DEFAULT_HOTKEY)
         if not isinstance(self.hotkey, dict) or "type" not in self.hotkey:
@@ -1286,11 +1337,11 @@ class PlumeApp:
             except Exception:
                 pass
         root.resizable(False, False)
-        self._compact_geom = f"{self.px(360)}x{self.px(384)}"
-        self._expanded_geom = f"{self.px(360)}x{self.px(638)}"
+        self._compact_geom = f"{self.px(360)}x{self.px(422)}"
+        self._expanded_geom = f"{self.px(360)}x{self.px(676)}"
         root.geometry(self._compact_geom)
         try:
-            root.minsize(self.px(360), self.px(384))
+            root.minsize(self.px(360), self.px(422))
         except Exception:
             pass
 
@@ -1368,6 +1419,17 @@ class PlumeApp:
         self.live_sel.pack(pady=(self.px(6), 0))
         self.live_sel.set_current("live" if self.live_mode else "batch")
 
+        # Traitement : dictée brute, ou reformulation par l'IA locale
+        self.ai_sel = SegmentedToggle(
+            self.container,
+            options=[("raw", "Dictée"), ("ai", "IA ✨")],
+            on_change=self._on_ai_change,
+            width=self.px(252), height=self.px(32),
+            font=self.f_seg, scale=self.scale,
+        )
+        self.ai_sel.pack(pady=(self.px(6), 0))
+        self.ai_sel.set_current("ai" if self.ai_mode else "raw")
+
         # Barre d'état
         self.status_var = tk.StringVar(value="Chargement du modèle…")
         self.status_lbl = tk.Label(self.container, textvariable=self.status_var,
@@ -1420,6 +1482,7 @@ class PlumeApp:
         self.sources_btn.set_theme(t, t["bg"])
         self.output_sel.set_theme(t, t["bg"])
         self.live_sel.set_theme(t, t["bg"])
+        self.ai_sel.set_theme(t, t["bg"])
         self.clear_btn.set_theme(t, t["bg"])
         self.copy_btn.set_theme(t, t["bg"])
         _set_titlebar_dark(self.root, t.get("dark_titlebar", False))
@@ -1435,6 +1498,8 @@ class PlumeApp:
             "theme": self.theme_name,
             "output_mode": self.output_mode,
             "live_mode": self.live_mode,
+            "ai_mode": self.ai_mode,
+            "ai_model": self.ai_model,
             "hotkey": self.hotkey,
             "custom_profiles": list(self._custom.values()),
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
@@ -1600,6 +1665,28 @@ class PlumeApp:
         m2.pack(side="right", padx=(0, self.px(6)))
         m2.set_theme(t, t["bg"])
 
+        # --- Mode IA (reformulation locale) ---
+        tk.Label(dlg, text="Mode IA — modèle Ollama (local)", bg=t["bg"], fg=t["muted"],
+                 font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
+                                                   pady=(self.px(16), self.px(4)))
+        airow = tk.Frame(dlg, bg=t["bg"])
+        airow.pack(fill="x", padx=pad)
+        self._ai_model_var = tk.StringVar(value=self.ai_model)
+        aient = tk.Entry(airow, textvariable=self._ai_model_var, font=self.f_status,
+                         bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                         relief="flat", highlightthickness=1,
+                         highlightbackground=t["border"], highlightcolor=t["accent"])
+        aient.pack(side="left", fill="x", expand=True, ipady=self.px(4))
+        aisave = RoundedButton(airow, "OK", self._save_ai_model, width=self.px(70),
+                               height=self.px(30), radius=self.px(9), font=self.f_btn,
+                               kind="accent", scale=self.scale)
+        aisave.pack(side="right", padx=(self.px(8), 0))
+        aisave.set_theme(t, t["bg"])
+        tk.Label(dlg, text="Nécessite Ollama (ollama.com) lancé + « ollama pull <modèle> ».",
+                 bg=t["bg"], fg=t["muted"], font=self.f_status, anchor="w",
+                 wraplength=self.px(320), justify="left").pack(fill="x", padx=pad,
+                                                               pady=(self.px(4), 0))
+
         self._settings_status = tk.StringVar(value="")
         tk.Label(dlg, textvariable=self._settings_status, bg=t["bg"], fg=t["muted"],
                  font=self.f_status, anchor="w").pack(fill="x", padx=pad,
@@ -1668,6 +1755,14 @@ class PlumeApp:
                 pass
             dlg.destroy()
 
+    def _save_ai_model(self):
+        name = self._ai_model_var.get().strip()
+        if name:
+            self.ai_model = name
+            self._save_prefs()
+            if getattr(self, "_settings_status", None) is not None:
+                self._settings_status.set(f"Modèle IA : {name}")
+
     # ----- Capture / réglage du raccourci -----
     def _current_mods(self):
         """Modificateurs physiquement enfoncés -> flags RegisterHotKey (via Win32)."""
@@ -1733,6 +1828,15 @@ class PlumeApp:
         self._save_prefs()
         self.status_var.set("Transcription en direct activée" if self.live_mode
                             else "Transcription à l'arrêt (fin d'enregistrement)")
+
+    def _on_ai_change(self, key):
+        self.ai_mode = (key == "ai")
+        self._save_prefs()
+        self._update_idle_controls()   # (dés)active le direct selon le mode IA
+        if self.ai_mode:
+            self.status_var.set(f"Mode IA : reformulation locale ({self.ai_model})")
+        else:
+            self.status_var.set("Mode dictée (texte brut)")
 
     def _ready_status(self):
         s = f"Prêt — {self.backend}"
@@ -1878,6 +1982,18 @@ class PlumeApp:
             text = transcribe_audio(self.model, audio)
             if not text:
                 self.q.put(("empty", None))
+                return
+            if self.ai_mode:
+                self.q.put(("ai_working", None))   # -> statut « Reformulation (IA)… »
+                try:
+                    out = ai_reformulate(text, self.ai_model)
+                except AIError as e:
+                    self.q.put(("ai_error", str(e)))
+                    return
+                except Exception as e:
+                    self.q.put(("ai_error", f"IA : {e}"))
+                    return
+                self.q.put(("result", out or text))
             else:
                 self.q.put(("result", text))
         except Exception as e:
@@ -1971,7 +2087,9 @@ class PlumeApp:
         self.mic_btn.set_enabled(can_record)
         self.sources_btn.set_enabled(self.devices_loaded and not self.recording)
         self.output_sel.set_enabled(not self.recording)
-        self.live_sel.set_enabled(not self.recording)
+        # En mode IA, le direct est désactivé (l'IA reformule à la fin).
+        self.live_sel.set_enabled(not self.recording and not self.ai_mode)
+        self.ai_sel.set_enabled(not self.recording)
 
     def _handle(self, kind, payload):
         if kind == "hotkey":
@@ -2027,6 +2145,12 @@ class PlumeApp:
                 self._reveal_text_area()
                 self._emit_output(payload)
                 self.status_var.set(self._ready_status())
+        elif kind == "ai_working":
+            self.status_var.set("Reformulation par l'IA…")
+        elif kind == "ai_error":
+            self._update_idle_controls()
+            self.status_var.set(payload)
+            print(f"[Plume] {payload}", file=sys.stderr)
         elif kind == "empty":
             self._update_idle_controls()
             self.status_var.set("Rien à transcrire (enregistrement vide ou trop court).")
@@ -2055,9 +2179,10 @@ class PlumeApp:
             self.sources_btn.set_enabled(False)
             self.output_sel.set_enabled(False)
             self.live_sel.set_enabled(False)
+            self.ai_sel.set_enabled(False)
             self._record_start = time.monotonic()
             self._tick_timer()
-            if self.live_mode:
+            if self.live_mode and not self.ai_mode:
                 # Direct : la zone vient d'être vidée ; on affine au fil de la
                 # parole (un thread dédié fait le streaming).
                 self._live_prefix = ""
@@ -2070,7 +2195,7 @@ class PlumeApp:
         else:
             self.recording = False
             self.mic_btn.set_recording(False)
-            if self.live_mode:
+            if self.live_mode and not self.ai_mode:
                 # Le worker de streaming fait la passe finale (arrête le recorder,
                 # fige le texte, applique la sortie) puis réactive les contrôles.
                 self.mic_btn.set_enabled(False)
