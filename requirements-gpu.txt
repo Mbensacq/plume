@@ -1,0 +1,11 @@
+# Plume — installation GPU NVIDIA : dépendances de base + bibliothèques CUDA 12 /
+# cuDNN 9 fournies en wheels pip (~1,3 Go). Aucun CUDA Toolkit système requis ;
+# seul un pilote NVIDIA récent (compatible CUDA 12) est nécessaire.
+#
+#   .venv\Scripts\python -m pip install -r requirements-gpu.txt
+#
+# Sans carte NVIDIA, ces paquets s'installent quand même mais sont inutilisés :
+# l'application bascule automatiquement sur le CPU (int8).
+-r requirements.txt
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.23.0.39

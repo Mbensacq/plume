@@ -1,0 +1,39 @@
+[project]
+name = "plume-dictee"
+version = "1.0.0"
+description = "Dictée vocale locale et hors ligne pour Windows (Whisper, micro et son du PC)"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "Mathis Bensacq" }]
+keywords = ["speech-to-text", "whisper", "dictation", "french", "offline", "windows"]
+classifiers = [
+    "Environment :: Win32 (MS Windows)",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+# Les dépendances épinglées sont dans requirements.txt (CPU) et
+# requirements-gpu.txt (NVIDIA) : c'est le chemin d'installation documenté.
+
+[project.urls]
+Repository = "https://github.com/Mbensacq/plume"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# E402 : les imports lourds sont volontairement placés après la configuration
+# du chemin des DLL CUDA (voir _setup_cuda_dll_path dans plume.py).
+ignore = ["E402"]

@@ -22,9 +22,15 @@ import re
 import sys
 import time
 import json
+import errno
 import queue
 import threading
+import traceback
 import importlib.util
+
+__version__ = "1.0.0"
+
+FROZEN = bool(getattr(sys, "frozen", False))   # exécutable PyInstaller ?
 
 
 # ---------------------------------------------------------------------------
@@ -33,31 +39,109 @@ import importlib.util
 # ---------------------------------------------------------------------------
 def _app_dir():
     """Dossier de base servant d'ancre aux fichiers de l'app (config, corrections,
-    icône) : le dossier de ce script."""
+    journal, modèle en version portable) : dossier de l'exécutable si l'app est
+    « figée » (PyInstaller), sinon dossier de ce script."""
+    if FROZEN:
+        return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
 APP_DIR = _app_dir()
 
 
+def _bundle_dir():
+    """Dossier des ressources embarquées (PyInstaller : _internal), sinon APP_DIR."""
+    return getattr(sys, "_MEIPASS", None) or APP_DIR
+
+
 def _icon_path():
-    """Chemin du .ico de l'app s'il est présent à côté du script, sinon None."""
-    p = os.path.join(APP_DIR, "plume.ico")
-    return p if os.path.exists(p) else None
+    """Chemin du .ico de l'app s'il est présent (bundle figé en priorité, sinon à
+    côté du script). Retourne None si absent."""
+    for base in (_bundle_dir(), APP_DIR):
+        p = os.path.join(base, "plume.ico")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Journal : stderr (si console) + fichier plume.log à côté de l'app. Lancée via
+# pythonw / l'exécutable fenêtré, l'app n'a pas de console : sans ce fichier,
+# aucune erreur ne serait visible.
+# ---------------------------------------------------------------------------
+LOG_PATH = os.path.join(APP_DIR, "plume.log")
+_LOG_MAX_BYTES = 1_000_000
+_log_lock = threading.Lock()
+
+
+def log(msg):
+    """Écrit `msg` sur stderr et dans plume.log (horodaté). Ne lève jamais."""
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}"
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+    with _log_lock:
+        try:
+            if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > _LOG_MAX_BYTES:
+                os.replace(LOG_PATH, LOG_PATH + ".old")
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+
+def _message_box(title, text):
+    """Boîte de dialogue système (Windows) pour les erreurs FATALES survenant avant
+    ou sans interface Tk ; ailleurs, simple affichage sur stderr."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(text), str(title), 0x10)  # MB_ICONERROR
+            return
+        except Exception:
+            pass
+    print(f"{title} : {text}", file=sys.stderr)
+
+
+def fatal(text, exc=None):
+    """Journalise une erreur bloquante, l'affiche à l'utilisateur, puis quitte."""
+    log("FATAL : " + text)
+    if exc is not None:
+        log("".join(traceback.format_exception(exc)))
+    _message_box("Plume — erreur", text + f"\n\nDétails : {LOG_PATH}")
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Constantes éditables
 # ---------------------------------------------------------------------------
 SAMPLE_RATE = 16000        # Hz — format attendu par Whisper (16 kHz mono)
-# Taille du modèle. Surchargeable SANS recompiler via $PLUME_MODEL (ex.
-# "medium" / "small" sur un PC sans GPU). Défaut : "large-v3".
-MODEL_SIZE = os.environ.get("PLUME_MODEL", "large-v3")
 LANGUAGE = "fr"            # langue forcée
 
-# Dossier de stockage du modèle Whisper (téléchargé au 1er lancement). Par défaut
-# None -> cache HuggingFace partagé. Surchargeable via $PLUME_MODEL_DIR.
-MODEL_DIR = os.environ.get("PLUME_MODEL_DIR") or None
+# Taille du modèle Whisper. Priorité : $PLUME_MODEL, puis le choix fait dans les
+# Paramètres (plume_config.json), sinon un défaut qui dépend du matériel :
+# large-v3 sur GPU, un modèle plus léger sur CPU (large-v3 y est très lent).
+DEFAULT_GPU_MODEL = "large-v3"
+DEFAULT_CPU_MODEL = "small"
+MODEL_SIZE = os.environ.get("PLUME_MODEL", "").strip() or None   # None = auto
+KNOWN_MODELS = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+
+# Taille approximative des modèles téléchargés (Mo), pour informer l'utilisateur.
+MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 485, "medium": 1530,
+                  "large-v3-turbo": 1620, "turbo": 1620, "large-v3": 3090,
+                  "large-v2": 3090, "large": 3090}
+
+# Dossier de stockage du modèle Whisper (téléchargé au 1er lancement).
+# Priorité : $PLUME_MODEL_DIR ; en version portable (exécutable) : models\ à côté
+# de l'exe ; sinon None -> cache HuggingFace partagé (~/.cache/huggingface).
+MODEL_DIR = (os.environ.get("PLUME_MODEL_DIR")
+             or (os.path.join(APP_DIR, "models") if FROZEN else None))
+
+# Durée maximale d'un enregistrement (s) : au-delà, l'enregistrement est arrêté
+# automatiquement et transcrit. Borne la mémoire (16 kHz float32 = ~230 Mo/h par
+# source) et le temps de transcription finale en mode « à l'arrêt ».
+MAX_RECORD_SECONDS = 2 * 3600
 
 # Repli CPU : si le chargement/inférence CUDA échoue, on retente en CPU/int8.
 GPU_DEVICE = "cuda"
@@ -164,14 +248,21 @@ def _setup_cuda_dll_path():
     Doit être appelé AVANT d'importer faster_whisper / ctranslate2.
     Retourne la liste des répertoires ajoutés (vide si rien trouvé)."""
     added = []
+    bases = []
 
-    # `nvidia` est un paquet d'espace de noms (PEP 420) : pas de __file__ ; on
-    # parcourt __path__ pour localiser site-packages/nvidia.
+    # Version portable (PyInstaller) : les DLL sont collectées dans le bundle sous
+    # _internal/nvidia/<sous-paquet>/bin, un dossier que le bootloader n'ajoute
+    # pas au chemin de recherche des DLL.
+    if FROZEN:
+        bases.append(os.path.join(_bundle_dir(), "nvidia"))
+
+    # Installation pip : `nvidia` est un paquet d'espace de noms (PEP 420) : pas
+    # de __file__ ; on parcourt __path__ pour localiser site-packages/nvidia.
     try:
         import nvidia  # paquets nvidia-cublas-cu12, nvidia-cudnn-cu12, ...
-        bases = list(getattr(nvidia, "__path__", []))
+        bases += list(getattr(nvidia, "__path__", []))
     except ImportError:
-        return added
+        pass
 
     for base in bases:
         for sub in ("cublas", "cudnn", "cuda_nvrtc"):
@@ -191,7 +282,12 @@ def _setup_cuda_dll_path():
 
 ADDED_DLL_DIRS = _setup_cuda_dll_path()
 
-import numpy as np  # noqa: E402  (après _setup_cuda_dll_path, par cohérence)
+try:
+    import numpy as np  # noqa: E402  (après _setup_cuda_dll_path, par cohérence)
+except ImportError as _e:
+    fatal("Dépendances Python manquantes (numpy). Installez-les avec :\n"
+          "    python -m pip install -r requirements.txt\n"
+          "ou lancez install.bat.", _e)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +318,80 @@ CAPTURE_AVAILABLE = _capture_available()
 # ---------------------------------------------------------------------------
 # Chargement du modèle (GPU avec repli CPU)
 # ---------------------------------------------------------------------------
-def _try_load(device, compute_type):
+class ModelError(Exception):
+    """Échec de chargement du modèle, avec un message déjà compréhensible pour
+    l'utilisateur (pas de trace brute)."""
+
+
+def _is_network_error(e):
+    """Vrai si l'exception (ou une de ses causes) ressemble à un problème réseau
+    ou à un modèle absent du cache hors ligne (huggingface_hub / requests)."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        name = type(e).__name__
+        text = str(e).lower()
+        if name in ("LocalEntryNotFoundError", "ConnectionError", "ConnectTimeout",
+                    "ReadTimeout", "MaxRetryError", "NewConnectionError",
+                    "OfflineModeIsEnabled", "HfHubHTTPError", "RepositoryNotFoundError",
+                    "GatedRepoError", "SSLError", "ProxyError", "URLError",
+                    "gaierror", "timeout"):
+            return True
+        if any(k in text for k in ("connection", "network", "resolve", "timed out",
+                                    "offline", "huggingface.co", "name or service",
+                                    "getaddrinfo", "unreachable")):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+def _is_disk_full(e):
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, OSError) and e.errno in (errno.ENOSPC, errno.EDQUOT):
+            return True
+        if "no space left" in str(e).lower():
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+def describe_model_error(e, model_size, model_dir=None):
+    """Traduit une exception de chargement en message clair (une phrase, avec la
+    marche à suivre). Retourne str."""
+    size_mb = MODEL_SIZES_MB.get(str(model_size), 0)
+    size_txt = f" (~{size_mb / 1000:.1f} Go)" if size_mb >= 1000 else (
+        f" (~{size_mb} Mo)" if size_mb else "")
+    where = model_dir or os.path.join("~", ".cache", "huggingface", "hub")
+    if isinstance(e, ModelError):
+        return str(e)
+    if isinstance(e, ImportError):
+        return ("Dépendance manquante : " + str(e) + ". Installez les dépendances : "
+                "python -m pip install -r requirements.txt (ou install.bat).")
+    if _is_disk_full(e):
+        return (f"Disque plein : impossible d'écrire le modèle « {model_size} »{size_txt} "
+                f"dans {where}. Libérez de l'espace puis relancez.")
+    if _is_network_error(e):
+        return (f"Modèle « {model_size} »{size_txt} introuvable en local et pas de "
+                "connexion internet. Connectez-vous une fois pour le télécharger "
+                f"(il est ensuite conservé dans {where}), ou choisissez un modèle "
+                "déjà téléchargé dans les Paramètres.")
+    if isinstance(e, (PermissionError,)):
+        return (f"Accès refusé en écriture dans {where}. Choisissez un autre dossier "
+                "via PLUME_MODEL_DIR ou vérifiez les droits.")
+    if isinstance(e, MemoryError) or "out of memory" in str(e).lower():
+        return (f"Mémoire insuffisante pour le modèle « {model_size} ». Choisissez un "
+                "modèle plus petit (Paramètres) : medium, small…")
+    text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    if "invalid model" in text.lower() or "not a valid" in text.lower() \
+            or "repo id" in text.lower():
+        return (f"Modèle « {model_size} » inconnu. Choix possibles : "
+                + ", ".join(KNOWN_MODELS) + ".")
+    return f"Échec du chargement du modèle « {model_size} » : {text[:160]}"
+
+
+def _try_load(device, compute_type, model_size):
     """Construit le modèle puis exécute une petite passe de chauffe.
 
     La passe de chauffe force l'initialisation complète (allocation GPU,
@@ -232,10 +401,10 @@ def _try_load(device, compute_type):
     from faster_whisper import WhisperModel
 
     # download_root : None (défaut) => cache HuggingFace partagé ; sinon dossier
-    # imposé via $PLUME_MODEL_DIR.
+    # imposé via $PLUME_MODEL_DIR (ou models\ en version portable).
     if MODEL_DIR:
         os.makedirs(MODEL_DIR, exist_ok=True)
-    model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute_type,
+    model = WhisperModel(model_size, device=device, compute_type=compute_type,
                          download_root=MODEL_DIR)
 
     # Chauffe : 1 s de signal, VAD désactivé pour garantir le passage dans
@@ -248,37 +417,97 @@ def _try_load(device, compute_type):
     return model
 
 
-def load_model(prefer_gpu=True):
+def resolve_model_size(requested=None, backend_is_gpu=True):
+    """Taille de modèle effective : $PLUME_MODEL > `requested` (Paramètres) >
+    défaut selon le matériel (large-v3 sur GPU, plus léger sur CPU)."""
+    if MODEL_SIZE:
+        return MODEL_SIZE
+    if requested:
+        return str(requested).strip()
+    return DEFAULT_GPU_MODEL if backend_is_gpu else DEFAULT_CPU_MODEL
+
+
+def load_model(prefer_gpu=True, requested_size=None):
     """Charge le modèle Whisper. Tente le GPU (CUDA/float16) puis se rabat sur
-    le CPU (int8). Retourne (model, backend_str)."""
+    le CPU (int8). Retourne (model, backend_str, model_size).
+    Lève ModelError avec un message compréhensible en cas d'échec définitif."""
+    gpu_size = resolve_model_size(requested_size, backend_is_gpu=True)
+    cpu_size = resolve_model_size(requested_size, backend_is_gpu=False)
+    gpu_error = None
     if prefer_gpu and not FORCE_CPU:
         try:
-            model = _try_load(GPU_DEVICE, GPU_COMPUTE_TYPE)
-            return model, "GPU (CUDA)"
+            model = _try_load(GPU_DEVICE, GPU_COMPUTE_TYPE, gpu_size)
+            return model, "GPU (CUDA)", gpu_size
         except Exception as e:
-            print("[Plume] Chargement CUDA échoué -> repli CPU.\n"
-                  f"         Cause : {e}", file=sys.stderr)
-    model = _try_load(CPU_DEVICE, CPU_COMPUTE_TYPE)
-    return model, "CPU"
-
-
-def load_replacements():
-    """Charge le dictionnaire de corrections personnalisées (si présent).
-    Ignore les clés commençant par « _ » (commentaires/exemples)."""
+            gpu_error = e
+            log("Chargement CUDA échoué -> repli CPU. Cause : "
+                f"{type(e).__name__}: {str(e)[:300]}")
+            if gpu_size == cpu_size and (_is_network_error(e) or _is_disk_full(e)):
+                # Inutile de retenter en CPU : le modèle lui-même est indisponible.
+                raise ModelError(describe_model_error(e, gpu_size, MODEL_DIR)) from e
     try:
-        with open(REPLACEMENTS_PATH, "r", encoding="utf-8-sig") as f:
+        model = _try_load(CPU_DEVICE, CPU_COMPUTE_TYPE, cpu_size)
+    except Exception as e:
+        log("Chargement CPU échoué : " + "".join(traceback.format_exception(e)))
+        raise ModelError(describe_model_error(e, cpu_size, MODEL_DIR)) from e
+    backend = "CPU"
+    if gpu_error is not None and not FORCE_CPU:
+        backend = "CPU (GPU indisponible)"
+    return model, backend, cpu_size
+
+
+def load_replacements(path=None):
+    """Charge le dictionnaire de corrections personnalisées (si présent).
+    Ignore les clés commençant par « _ » (commentaires/exemples).
+    Un fichier absent ou invalide donne un dictionnaire vide (voir
+    check_replacements_file pour le diagnostic)."""
+    path = path or REPLACEMENTS_PATH
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
             raw = json.load(f)
+        if not isinstance(raw, dict):
+            return {}
         return {k: v for k, v in raw.items()
                 if isinstance(k, str) and not k.startswith("_")
-                and isinstance(v, str)}
-    except Exception:
+                and k.strip() and isinstance(v, str)}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log(f"Corrections ignorées : {os.path.basename(path)} invalide ({e})")
         return {}
 
 
+def check_replacements_file(path=None):
+    """Diagnostic du fichier de corrections : None si tout va bien (ou absent),
+    sinon un message d'erreur court destiné à l'utilisateur."""
+    path = path or REPLACEMENTS_PATH
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        return (f"{os.path.basename(path)} : JSON invalide (ligne {e.lineno}, "
+                f"colonne {e.colno}) — corrections désactivées.")
+    except Exception as e:
+        return f"{os.path.basename(path)} illisible ({type(e).__name__})."
+    if not isinstance(raw, dict):
+        return f"{os.path.basename(path)} : un objet {{ \"mot\": \"correction\" }} est attendu."
+    return None
+
+
 def apply_replacements(text, repl):
-    """Applique les corrections (mots entiers, insensible à la casse)."""
+    """Applique les corrections (mots entiers, insensible à la casse).
+
+    Les frontières sont « pas de caractère de mot juste avant/après » plutôt
+    que \\b, pour que des clés finissant par un signe (« c++ », « .net »)
+    fonctionnent aussi."""
+    if not text or not repl:
+        return text
     for wrong, right in repl.items():
-        text = re.sub(r"\b" + re.escape(wrong) + r"\b", right, text,
+        if not wrong:
+            continue
+        text = re.sub(r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", right, text,
                       flags=re.IGNORECASE)
     return text
 
@@ -308,9 +537,22 @@ def _join_segments(segments):
     return " ".join(parts).strip()
 
 
-def transcribe_audio(model, audio):
+def _iter_with_progress(segments, total_seconds, progress):
+    """Relaie l'avancement (secondes d'audio traitées / total) à `progress`
+    au fil des segments produits par faster-whisper."""
+    for seg in segments:
+        if progress is not None:
+            try:
+                progress(min(float(seg.end), total_seconds), total_seconds)
+            except Exception:
+                pass
+        yield seg
+
+
+def transcribe_audio(model, audio, progress=None):
     """Transcrit un buffer (np.float32 16 kHz mono) en texte ponctué.
-    Centralise les options qui favorisent la ponctuation + les corrections."""
+    Centralise les options qui favorisent la ponctuation + les corrections.
+    `progress(done_s, total_s)` est appelé (thread appelant) à chaque segment."""
     segments, _info = model.transcribe(
         audio,
         language=LANGUAGE,
@@ -319,7 +561,8 @@ def transcribe_audio(model, audio):
         initial_prompt=INITIAL_PROMPT or None,
         condition_on_previous_text=CONDITION_ON_PREVIOUS_TEXT,
     )
-    text = _join_segments(segments)
+    total = float(audio.size) / SAMPLE_RATE
+    text = _join_segments(_iter_with_progress(segments, total, progress))
     text = apply_replacements(text, load_replacements())
     return postprocess_text(text)
 
@@ -403,6 +646,74 @@ def rms(audio):
     return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
 
 
+# Son neuf minimal (s) pour qu'une passe en direct vaille la peine.
+LIVE_MIN_PASS_SEC = 0.4
+
+
+def live_should_commit(tail, tail_dur, final=False):
+    """Décide si la queue audio courante doit être FIGÉE (rendue non révisable).
+
+    On ne fige que sur une VRAIE pause (silence prolongé en fin de queue) ou si
+    la fenêtre révisable devient trop longue : une simple hésitation ne fige
+    rien, tout reste révisable comme en mode « à l'arrêt »."""
+    if final:
+        return True
+    if tail_dur < LIVE_MIN_COMMIT:
+        return False
+    if tail_dur >= LIVE_MAX_TAIL:
+        return True
+    pause = tail[-int(LIVE_SILENCE_SEC * SAMPLE_RATE):]
+    return bool(pause.size) and rms(pause) < LIVE_SILENCE_RMS
+
+
+class LiveSession:
+    """État d'une dictée en direct : texte déjà figé et index audio figé.
+
+    Indépendant de l'interface et du modèle : `step()` reçoit la queue audio
+    non figée et une fonction de transcription, et retourne le texte à
+    afficher. Testable sans matériel audio ni modèle."""
+
+    def __init__(self, prefix=""):
+        self.prefix = prefix          # texte déjà présent dans le panneau au départ
+        self.committed = ""           # texte figé de la dictée en cours
+        self.commit_sample = 0        # index audio (échantillons) figé
+
+    def _prompt(self):
+        if self.committed:
+            return (INITIAL_PROMPT + " " + self.committed[-200:]).strip()
+        return None
+
+    def _join_prefix(self, body):
+        if self.prefix and body:
+            return (self.prefix + " " + body).strip()
+        return (self.prefix or body).strip()
+
+    def step(self, tail, total, transcribe, final=False):
+        """Une passe. `tail` : audio depuis `commit_sample` ; `total` : nombre
+        d'échantillons capturés au total ; `transcribe(audio, prompt) -> str`.
+
+        Retourne (texte_affiché, texte_final_nettoyé_ou_None), ou None si la
+        passe est inutile (pas assez de son neuf)."""
+        tail = np.asarray(tail, dtype=np.float32).reshape(-1)
+        tail_dur = tail.size / SAMPLE_RATE
+        if not final and tail.size < int(LIVE_MIN_PASS_SEC * SAMPLE_RATE):
+            return None
+        # Queue quasi silencieuse -> on ne transcrit pas (évite les hallucinations).
+        text = transcribe(tail, self._prompt()) if rms(tail) >= LIVE_SILENCE_RMS else ""
+        text = (text or "").strip()
+        if live_should_commit(tail, tail_dur, final):
+            if text:
+                self.committed = (self.committed + " " + text).strip()
+            self.commit_sample = max(self.commit_sample, int(total))
+            body = self.committed
+        else:
+            body = (self.committed + " " + text).strip()
+        if final:
+            clean = postprocess_text(self.committed)
+            return self._join_prefix(clean), clean
+        return self._join_prefix(body), None
+
+
 def postprocess_text(text):
     """Nettoyage TRÈS léger : on préserve la ponctuation de Whisper (déjà
     correcte, espace fine à la française avant « ? ! ; : » incluse) et on se
@@ -428,6 +739,37 @@ def postprocess_text(text):
 # ---------------------------------------------------------------------------
 # Capture audio (soundcard / WASAPI) — micros et sorties (loopback)
 # ---------------------------------------------------------------------------
+def describe_capture_error(errors):
+    """Message utilisateur à partir des erreurs de capture remontées par le
+    Recorder (liste de str « nom — Exception: détail »)."""
+    joined = " ; ".join(errors).lower()
+    if not errors:
+        return "Capture impossible."
+    if "loopback" in joined or "render" in joined or "0x88890008" in joined:
+        return ("Capture du son du PC impossible : la sortie audio choisie est "
+                "indisponible (débranchée, désactivée ou en usage exclusif). "
+                "Choisissez une autre source dans « Sources… ».")
+    if "0x88890004" in joined or "device" in joined or "not found" in joined \
+            or "invalidated" in joined or "0x88890026" in joined:
+        return ("Périphérique audio indisponible (micro débranché ou désactivé). "
+                "Rebranchez-le, puis « Sources… » → Actualiser.")
+    if "access" in joined or "denied" in joined or "0x80070005" in joined:
+        return ("Accès au micro refusé. Autorisez-le dans Windows : Paramètres → "
+                "Confidentialité → Microphone.")
+    first = errors[0].split(" — ", 1)
+    return f"Capture impossible ({first[0]}) : {first[-1][:100]}"
+
+
+def describe_enumeration_error(e):
+    """Message utilisateur quand l'énumération des périphériques échoue."""
+    if not CAPTURE_AVAILABLE:
+        return ("Capture audio indisponible sur ce système (Windows + paquet "
+                "soundcard requis).")
+    return ("Impossible de lister les périphériques audio "
+            f"({type(e).__name__}). Vérifiez qu'un micro ou une sortie audio est "
+            "branché(e) et activé(e) dans Windows, puis « Sources… » → Actualiser.")
+
+
 def enumerate_devices():
     """Énumère les périphériques de capture via soundcard.
 
@@ -467,6 +809,8 @@ class Recorder:
         self.sources = []
         self._lock = threading.Lock()
         self._buffers = {}      # index source -> liste de np.ndarray
+        self._counts = {}       # index source -> nb d'échantillons capturés
+        self._failed = set()    # index des sources dont la capture a échoué
         self._threads = []
         self._running = False
         self._errors = []
@@ -480,6 +824,17 @@ class Recorder:
             self._errors = []
         return errs
 
+    def all_failed(self):
+        """Vrai si TOUTES les sources ont cessé de capturer sur erreur (micro
+        débranché, périphérique de loopback indisponible…)."""
+        with self._lock:
+            return bool(self.sources) and len(self._failed) >= len(self.sources)
+
+    def total_samples(self):
+        """Longueur (échantillons) de l'audio capturé jusqu'ici (source la plus longue)."""
+        with self._lock:
+            return max(self._counts.values(), default=0)
+
     # ----- démarrage -----
     def start(self):
         """Démarre la capture de toutes les sources sélectionnées."""
@@ -487,6 +842,8 @@ class Recorder:
             raise RuntimeError("aucune source sélectionnée")
         with self._lock:
             self._buffers = {i: [] for i in range(len(self.sources))}
+            self._counts = {i: 0 for i in range(len(self.sources))}
+            self._failed = set()
             self._errors = []
         self._running = True
         self._threads = []
@@ -513,11 +870,13 @@ class Recorder:
                     arr = np.asarray(data, dtype=np.float32).reshape(-1)
                     with self._lock:
                         self._buffers[i].append(arr)
+                        self._counts[i] += arr.size
         except Exception as e:
             msg = f"{src.get('name', src.get('id'))} — {type(e).__name__}: {e}"
             with self._lock:
                 self._errors.append(msg)
-            print(f"[audio] {msg}", file=sys.stderr)
+                self._failed.add(i)
+            log(f"[audio] {msg}")
         # NB : pas de CoUninitialize (le thread se termine, COM est nettoyé) ;
         # un CoUninitialize ici pourrait casser le COM partagé de soundcard.
 
@@ -544,12 +903,34 @@ class Recorder:
             mix /= peak
         return mix
 
-    def snapshot(self):
-        """Retourne l'audio mixé capturé JUSQU'ICI, sans arrêter la capture.
-        Sert à la transcription en direct (streaming)."""
+    @staticmethod
+    def _tail_of(chunks, count, since):
+        """Échantillons [since, count) d'une source, en ne concaténant que les
+        derniers morceaux nécessaires (coût borné par la taille de la queue, pas
+        par la durée totale de l'enregistrement)."""
+        need = count - since
+        if need <= 0:
+            return np.zeros(0, dtype=np.float32)
+        parts, got = [], 0
+        for a in reversed(chunks):
+            parts.append(a)
+            got += a.size
+            if got >= need:
+                break
+        arr = np.concatenate(parts[::-1]).reshape(-1)
+        return arr[-need:] if arr.size > need else arr
+
+    def snapshot(self, since=0):
+        """Retourne (audio, total) SANS arrêter la capture : `audio` est le mix
+        des échantillons capturés depuis l'index `since`, `total` le nombre
+        d'échantillons capturés jusqu'ici. Sert à la transcription en direct :
+        seule la queue non figée est reconstruite à chaque passe."""
         with self._lock:
-            buffers = {i: list(v) for i, v in self._buffers.items()}
-        return self._mix(buffers)
+            chunks = {i: list(v) for i, v in self._buffers.items()}
+            counts = dict(self._counts)
+        total = max(counts.values(), default=0)
+        tails = {i: [self._tail_of(chunks[i], counts[i], since)] for i in chunks}
+        return self._mix(tails), total
 
     # ----- arrêt -----
     def stop(self):
@@ -577,7 +958,21 @@ class Recorder:
 # ===========================================================================
 # INTERFACE GRAPHIQUE
 # ===========================================================================
-import tkinter as tk  # noqa: E402
+try:
+    import tkinter as tk  # noqa: E402
+    TK_AVAILABLE = True
+except ImportError:
+    # Sans Tk (Python installé sans « tcl/tk », environnement serveur…), on garde
+    # utilisables le cœur (transcription, --selftest, tests) : les classes de
+    # l'interface ci-dessous héritent alors de substituts inertes, et main()
+    # affiche un message clair au lieu d'une trace.
+    TK_AVAILABLE = False
+
+    class _TkStub:
+        Canvas = object
+        Frame = object
+
+    tk = _TkStub()
 
 # Pillow : rendu anti-aliasé des formes de l'UI (cercles, coins arrondis) via
 # supersampling. Optionnel : si absent, on retombe sur le dessin Canvas natif.
@@ -635,8 +1030,10 @@ def save_config(cfg):
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f)
-    except Exception:
-        pass
+    except Exception as e:
+        # Non bloquant (disque plein, dossier en lecture seule…) : l'app
+        # fonctionne, seules les préférences ne sont pas mémorisées.
+        log(f"Préférences non enregistrées ({type(e).__name__}: {e})")
 
 
 # --- DPI / barre de titre (Windows) -----------------------------------------
@@ -898,8 +1295,7 @@ def type_text(text, avoid_hwnd=None):
     sent = user32.SendInput(n, arr, ctypes.sizeof(INPUT))
     if sent != n:
         err = ctypes.get_last_error()
-        print(f"[Plume] insertion directe : SendInput {sent}/{n} (err {err})",
-              file=sys.stderr)
+        log(f"Insertion directe : SendInput {sent}/{n} (err {err})")
     return sent == n
 
 
@@ -1299,9 +1695,16 @@ class PlumeApp:
         # Transcription en direct (streaming)
         self.live_mode = bool(cfg.get("live_mode", DEFAULT_LIVE_MODE))
         self._stream_thread = None
-        self._live_committed = ""    # texte déjà figé pour la dictée en cours
-        self._live_commit_sample = 0  # index audio figé (échantillons)
-        self._live_prefix = ""       # texte déjà présent dans le panneau au départ
+        self._live = LiveSession()   # état de la dictée en direct en cours
+
+        # Modèle choisi dans les Paramètres (None = automatique selon GPU/CPU).
+        # $PLUME_MODEL, s'il est défini, prime toujours (cf. resolve_model_size).
+        self.model_choice = (cfg.get("model") or "").strip() or None
+        self.model_size = None        # taille effectivement chargée
+        self._model_error = None      # message si le chargement a échoué
+        self._loading_model = False
+        self._transcribing = False    # transcription « à l'arrêt » en cours
+        self._capture_warning = None  # erreur de capture partielle à afficher après coup
 
         # Mode IA : reformulation par un LLM local (Ollama) après la dictée
         self.ai_mode = bool(cfg.get("ai_mode", False))
@@ -1349,11 +1752,28 @@ class PlumeApp:
         self.root.update_idletasks()
         self.apply_theme(self.theme_name, persist=False)
 
+        # Une exception dans un callback Tk ne doit ni planter l'app ni rester
+        # invisible (pas de console sous pythonw) : journal + statut.
+        root.report_callback_exception = self._report_callback_exception
+
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self._pump_queue)
-        threading.Thread(target=self._load_model_worker, daemon=True).start()
+        self._start_model_load()
         threading.Thread(target=self._enumerate_worker, daemon=True).start()
         self._start_hotkey()
+        problem = check_replacements_file()
+        if problem:
+            log(problem)
+            self.root.after(1500, lambda: self.status_var.set("⚠ " + problem))
+
+    def _report_callback_exception(self, exc_type, exc, tb):
+        log("Erreur dans l'interface : "
+            + "".join(traceback.format_exception(exc_type, exc, tb)))
+        try:
+            self.status_var.set(f"Erreur interne ({exc_type.__name__}) — "
+                                f"détails dans {os.path.basename(LOG_PATH)}")
+        except Exception:
+            pass
 
     def px(self, n):
         return int(round(n * self.scale))
@@ -1500,6 +1920,7 @@ class PlumeApp:
             "live_mode": self.live_mode,
             "ai_mode": self.ai_mode,
             "ai_model": self.ai_model,
+            "model": self.model_choice,
             "hotkey": self.hotkey,
             "custom_profiles": list(self._custom.values()),
             "sources": [{"id": s["id"], "loopback": s["loopback"]}
@@ -1665,6 +2086,34 @@ class PlumeApp:
         m2.pack(side="right", padx=(0, self.px(6)))
         m2.set_theme(t, t["bg"])
 
+        # --- Modèle Whisper ---
+        tk.Label(dlg, text="Modèle Whisper", bg=t["bg"], fg=t["muted"],
+                 font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
+                                                   pady=(self.px(16), self.px(4)))
+        mrow = tk.Frame(dlg, bg=t["bg"])
+        mrow.pack(fill="x", padx=pad)
+        self._model_var = tk.StringVar(value=self.model_choice or "")
+        ment = tk.Entry(mrow, textvariable=self._model_var, font=self.f_status,
+                        bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                        relief="flat", highlightthickness=1,
+                        highlightbackground=t["border"], highlightcolor=t["accent"])
+        ment.pack(side="left", fill="x", expand=True, ipady=self.px(4))
+        mapply = RoundedButton(mrow, "Appliquer", self._apply_model_choice,
+                               width=self.px(90), height=self.px(30), radius=self.px(9),
+                               font=self.f_btn, kind="accent", scale=self.scale)
+        mapply.pack(side="right", padx=(self.px(8), 0))
+        mapply.set_theme(t, t["bg"])
+        cur = self.model_size or "chargement…"
+        if MODEL_SIZE:
+            mhelp = f"Imposé par PLUME_MODEL : {MODEL_SIZE}."
+        else:
+            mhelp = (f"Actuel : {cur}. Vide = automatique ({DEFAULT_GPU_MODEL} sur GPU, "
+                     f"{DEFAULT_CPU_MODEL} sur CPU). Choix : " + ", ".join(KNOWN_MODELS)
+                     + ". Un nouveau modèle est téléchargé au premier chargement.")
+        tk.Label(dlg, text=mhelp, bg=t["bg"], fg=t["muted"], font=self.f_status,
+                 anchor="w", wraplength=self.px(340), justify="left").pack(
+                     fill="x", padx=pad, pady=(self.px(4), 0))
+
         # --- Mode IA (reformulation locale) ---
         tk.Label(dlg, text="Mode IA — modèle Ollama (local)", bg=t["bg"], fg=t["muted"],
                  font=self.f_seg, anchor="w").pack(fill="x", padx=pad,
@@ -1755,6 +2204,23 @@ class PlumeApp:
                 pass
             dlg.destroy()
 
+    def _apply_model_choice(self):
+        """Change de modèle Whisper (Paramètres) et le recharge en arrière-plan."""
+        choice = self._model_var.get().strip() or None
+        if self.recording or self._transcribing:
+            self._settings_status.set("Attendez la fin de la dictée en cours.")
+            return
+        if MODEL_SIZE:
+            self._settings_status.set(f"PLUME_MODEL={MODEL_SIZE} prime sur ce réglage.")
+            return
+        if choice and not re.fullmatch(r"[\w.\-/]+", choice):
+            self._settings_status.set("Nom de modèle invalide.")
+            return
+        self.model_choice = choice
+        self._save_prefs()
+        self._settings_status.set(f"Chargement de « {choice or 'auto'} »…")
+        self._start_model_load()
+
     def _save_ai_model(self):
         name = self._ai_model_var.get().strip()
         if name:
@@ -1840,6 +2306,8 @@ class PlumeApp:
 
     def _ready_status(self):
         s = f"Prêt — {self.backend}"
+        if self.model_size:
+            s += f" · {self.model_size}"
         if self.active_hotkey_label:
             s += f"  ·  ⌨ {self.active_hotkey_label}"
         return s
@@ -1953,33 +2421,61 @@ class PlumeApp:
         except Exception:
             pass
         try:
+            if not CAPTURE_AVAILABLE:
+                raise RuntimeError("capture audio indisponible")
             data = enumerate_devices()
             self.q.put(("devices", data))
         except Exception as e:
-            self.q.put(("devices_error", f"{type(e).__name__}: {e}"))
+            log(f"Énumération des périphériques : {type(e).__name__}: {e}")
+            self.q.put(("devices_error", describe_enumeration_error(e)))
 
     def _on_pick_theme(self, name):
         if name != self.theme_name:
             self.apply_theme(name)
 
     # ----- Workers (threads secondaires) : ne touchent JAMAIS aux widgets -----
+    def _start_model_load(self):
+        """(Re)lance le chargement du modèle en arrière-plan."""
+        if self._loading_model or self.recording:
+            return
+        self._loading_model = True
+        self._model_error = None
+        self.model = None
+        self.backend = None
+        wanted = resolve_model_size(self.model_choice, backend_is_gpu=not FORCE_CPU)
+        size_mb = MODEL_SIZES_MB.get(wanted, 0)
+        hint = f" (téléchargé au 1er lancement, ~{size_mb} Mo)" if size_mb else ""
+        self.status_var.set(f"Chargement du modèle « {wanted} »…{hint}")
+        self._update_idle_controls()
+        threading.Thread(target=self._load_model_worker, daemon=True).start()
+
     def _load_model_worker(self):
         try:
             t0 = time.time()
-            model, backend = load_model()
+            model, backend, size = load_model(requested_size=self.model_choice)
             dt = time.time() - t0
             self.model = model
             self.backend = backend
+            self.model_size = size
             self.q.put(("ready", (backend, dt)))
+        except ModelError as e:
+            self.q.put(("model_error", str(e)))
         except Exception as e:
-            self.q.put(("error", f"Échec chargement modèle : {e}"))
+            log("Chargement du modèle : " + "".join(traceback.format_exception(e)))
+            self.q.put(("model_error", describe_model_error(
+                e, resolve_model_size(self.model_choice, not FORCE_CPU), MODEL_DIR)))
 
     def _transcribe_worker(self, audio):
         try:
             if audio is None or audio.size < int(MIN_RECORD_SECONDS * SAMPLE_RATE):
                 self.q.put(("empty", None))
                 return
-            text = transcribe_audio(self.model, audio)
+
+            def progress(done, total):
+                if total >= 20:   # inutile d'afficher une progression sur un court extrait
+                    self.q.put(("progress", (done, total)))
+
+            text = transcribe_audio(self.model, audio, progress=progress)
             if not text:
                 self.q.put(("empty", None))
                 return
@@ -1996,73 +2492,68 @@ class PlumeApp:
                 self.q.put(("result", out or text))
             else:
                 self.q.put(("result", text))
+        except MemoryError:
+            log("Transcription : mémoire insuffisante")
+            self.q.put(("error", "Mémoire insuffisante pour transcrire cet enregistrement. "
+                                 "Essayez un enregistrement plus court ou un modèle plus petit."))
         except Exception as e:
-            self.q.put(("error", f"Erreur de transcription : {e}"))
+            log("Erreur de transcription : " + "".join(traceback.format_exception(e)))
+            self.q.put(("error", f"Erreur de transcription ({type(e).__name__}) — "
+                                 f"détails dans {os.path.basename(LOG_PATH)}"))
 
     # ----- Transcription en direct (streaming) -----
     def _stream_worker(self):
         """Boucle (thread) qui transcrit en continu la file audio bornée depuis
         le dernier segment figé, et poste des aperçus. À l'arrêt, fait la passe
         finale, fige tout, et poste le résultat définitif."""
+        sess = self._live
+        repl = load_replacements()
+        model = self.model
+
+        def tx(audio, prompt):
+            return transcribe_stream(model, audio, repl, prompt)
+
+        failures = 0
         try:
-            repl = load_replacements()
             while self.recording:
-                self._process_live(self.recorder.snapshot(), repl, final=False)
+                tail, total = self.recorder.snapshot(sess.commit_sample)
+                try:
+                    res = sess.step(tail, total, tx, final=False)
+                    failures = 0
+                except Exception as e:
+                    # Une passe qui échoue n'annule pas la dictée : on réessaie
+                    # à la passe suivante ; on abandonne après 3 échecs d'affilée.
+                    failures += 1
+                    log("Passe en direct échouée : "
+                        + "".join(traceback.format_exception(e)))
+                    if failures >= 3:
+                        raise
+                    res = None
+                if res is not None:
+                    self.q.put(("live", (res[0], False, None)))
                 time.sleep(LIVE_STEP)
             final_audio = self.recorder.stop()
             errs = self.recorder.consume_errors()
             if final_audio.size == 0 and errs:
-                self.q.put(("error", "Capture : " + " ; ".join(errs)[:120]))
+                self.q.put(("live_abort", describe_capture_error(errs)))
                 return
-            self._process_live(final_audio, repl, final=True)
+            if errs:
+                log("Erreurs de capture (partielles) : " + " ; ".join(errs))
+            tail = (final_audio[sess.commit_sample:]
+                    if final_audio.size > sess.commit_sample
+                    else np.zeros(0, dtype=np.float32))
+            display, clean = sess.step(tail, final_audio.size, tx, final=True)
+            self.q.put(("live", (display, True, clean)))
         except Exception as e:
-            self.q.put(("error", f"Erreur transcription en direct : {e}"))
-
-    def _process_live(self, snap, repl, final):
-        """Transcrit la file audio courante (depuis le dernier point figé),
-        décide s'il faut la figer, et poste l'aperçu (ou le résultat final)."""
-        total = int(snap.size)
-        tail = (snap[self._live_commit_sample:] if total > self._live_commit_sample
-                else np.zeros(0, dtype=np.float32))
-        tail_dur = tail.size / SAMPLE_RATE
-        if not final and tail.size < int(0.4 * SAMPLE_RATE):
-            return  # pas assez de son neuf pour une passe utile
-
-        # Contexte : on redonne le texte déjà figé pour une bonne continuité.
-        prompt = None
-        if self._live_committed:
-            prompt = (INITIAL_PROMPT + " " + self._live_committed[-200:]).strip()
-        # File quasi silencieuse -> on ne transcrit pas (évite les hallucinations).
-        text = (transcribe_stream(self.model, tail, repl, prompt)
-                if rms(tail) >= LIVE_SILENCE_RMS else "")
-
-        # On ne FIGE (rend non révisable) que sur une VRAIE pause (silence
-        # prolongé) ou si la fenêtre devient trop longue : une simple hésitation
-        # ne fige rien, tout reste révisable comme en mode « à l'arrêt ».
-        commit = final
-        if not commit and tail_dur >= LIVE_MIN_COMMIT:
-            pause = tail[-int(LIVE_SILENCE_SEC * SAMPLE_RATE):]
-            if tail_dur >= LIVE_MAX_TAIL or (pause.size and rms(pause) < LIVE_SILENCE_RMS):
-                commit = True
-        if commit:
-            if text:
-                self._live_committed = (self._live_committed + " " + text).strip()
-            self._live_commit_sample = total
-            body = self._live_committed
-        else:
-            body = (self._live_committed + " " + text).strip()
-
-        if final:
-            clean = postprocess_text(self._live_committed)
-            self.q.put(("live", (self._join_prefix(clean), True, clean)))
-        else:
-            self.q.put(("live", (self._join_prefix(body), False, None)))
-
-    def _join_prefix(self, body):
-        """Assemble le texte déjà présent au départ (mode ajout) avec le nouveau."""
-        if self._live_prefix and body:
-            return (self._live_prefix + " " + body).strip()
-        return (self._live_prefix or body).strip()
+            log("Transcription en direct interrompue : "
+                + "".join(traceback.format_exception(e)))
+            try:
+                self.recorder.stop()
+            except Exception:
+                pass
+            self.q.put(("live_abort",
+                        f"Transcription en direct interrompue ({type(e).__name__}). "
+                        f"Détails : {os.path.basename(LOG_PATH)}"))
 
     def _set_text(self, s):
         """Remplace tout le contenu du panneau (utilisé par la transcription en direct)."""
@@ -2082,9 +2573,13 @@ class PlumeApp:
 
     def _update_idle_controls(self):
         """État des boutons hors enregistrement/transcription."""
+        busy = self.recording or self._transcribing
         can_record = (self.model is not None and len(self.selected_sources) > 0
-                      and not self.recording)
-        self.mic_btn.set_enabled(can_record)
+                      and not busy)
+        # Modèle en échec : le bouton sert à réessayer le chargement.
+        can_retry = (self.model is None and self._model_error is not None
+                     and not self._loading_model)
+        self.mic_btn.set_enabled(can_record or can_retry)
         self.sources_btn.set_enabled(self.devices_loaded and not self.recording)
         self.output_sel.set_enabled(not self.recording)
         # En mode IA, le direct est désactivé (l'IA reformule à la fin).
@@ -2093,7 +2588,8 @@ class PlumeApp:
 
     def _handle(self, kind, payload):
         if kind == "hotkey":
-            if self.recording or (self.model is not None and self.selected_sources):
+            if self.recording or (self.model is not None and self.selected_sources
+                                  and not self._transcribing):
                 self._on_mic()
             return
         if kind == "hotkey_status":
@@ -2116,15 +2612,45 @@ class PlumeApp:
             if self._sources_dialog is not None:
                 self._rebuild_sources_dialog()
         elif kind == "devices_error":
-            self.status_var.set(f"Périphériques audio : {payload}")
-            print(f"[Plume] Énumération : {payload}", file=sys.stderr)
+            self.devices_loaded = True      # permet « Sources… » -> Actualiser
+            self._update_idle_controls()
+            self.status_var.set(payload)
         elif kind == "ready":
             backend, dt = payload
+            self._loading_model = False
             self._update_idle_controls()
-            self.status_var.set(self._ready_status() if self.selected_sources
-                                else f"Prêt — {backend}  ·  choisissez une source")
-            print(f"[Plume] Modèle prêt en {dt:.1f}s — backend : {backend}",
-                  file=sys.stderr)
+            if self.selected_sources:
+                self.status_var.set(self._ready_status())
+            elif self.devices_loaded:
+                self.status_var.set(f"Prêt — {backend}  ·  aucune source : "
+                                    "branchez un micro, puis « Sources… »")
+            else:
+                self.status_var.set(f"Prêt — {backend}  ·  recherche des périphériques…")
+            log(f"Modèle « {self.model_size} » prêt en {dt:.1f}s — backend : {backend}")
+        elif kind == "model_error":
+            self._loading_model = False
+            self._model_error = payload
+            self._update_idle_controls()
+            self.status_var.set("⚠ " + payload)
+            log("Modèle : " + payload)
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("Plume — modèle indisponible",
+                                     payload + "\n\nCliquez sur le bouton central pour "
+                                     "réessayer.", parent=self.root)
+            except Exception:
+                pass
+        elif kind == "progress":
+            done, total = payload
+            self.status_var.set(f"Transcription… {int(done // 60)}:{int(done % 60):02d} / "
+                                f"{int(total // 60)}:{int(total % 60):02d}")
+        elif kind == "live_abort":
+            # La dictée en direct s'est arrêtée sur erreur : on remet l'interface
+            # dans l'état « prêt » (sinon le bouton resterait sur « Finalisation… »).
+            self.recording = False
+            self.mic_btn.set_recording(False)
+            self._update_idle_controls()
+            self.status_var.set("⚠ " + payload)
         elif kind == "live":
             display, final, out_text = payload
             self._reveal_text_area()
@@ -2135,6 +2661,7 @@ class PlumeApp:
                     self._emit_output(out_text)
                 self.status_var.set(self._ready_status())
         elif kind == "result":
+            self._transcribing = False
             self._update_idle_controls()
             if self.output_mode == "type":
                 # Insertion directe : on n'écrit PAS dans la fenêtre de Plume
@@ -2145,31 +2672,49 @@ class PlumeApp:
                 self._reveal_text_area()
                 self._emit_output(payload)
                 self.status_var.set(self._ready_status())
+            self._show_capture_warning()
         elif kind == "ai_working":
             self.status_var.set("Reformulation par l'IA…")
         elif kind == "ai_error":
+            self._transcribing = False
             self._update_idle_controls()
             self.status_var.set(payload)
-            print(f"[Plume] {payload}", file=sys.stderr)
+            log(payload)
         elif kind == "empty":
+            self._transcribing = False
             self._update_idle_controls()
             self.status_var.set("Rien à transcrire (enregistrement vide ou trop court).")
+            self._show_capture_warning()
         elif kind == "error":
+            self._transcribing = False
             self._update_idle_controls()
-            self.status_var.set(payload)
-            print(f"[Plume] {payload}", file=sys.stderr)
+            self.status_var.set("⚠ " + payload)
+            log(payload)
+
+    def _show_capture_warning(self):
+        """Affiche (une fois) l'erreur de capture survenue pendant l'enregistrement
+        qui vient d'être transcrit (ex. micro débranché en cours de dictée)."""
+        if self._capture_warning:
+            self.status_var.set("⚠ " + self._capture_warning)
+            self._capture_warning = None
 
     # ----- Actions UI (thread principal) -----
     def _on_mic(self):
         if not self.recording:
+            if self.model is None:
+                if self._model_error is not None:
+                    self._start_model_load()     # le bouton sert de « Réessayer »
+                return
+            if self._transcribing:
+                return
             if not self.selected_sources:
                 self.status_var.set("Aucune source — ouvrez « Sources… ».")
                 return
             try:
                 self.recorder.start()
             except Exception as e:
-                self.status_var.set(f"Capture indisponible : {e}")
-                print(f"[Plume] Capture indisponible : {e}", file=sys.stderr)
+                self.status_var.set(f"⚠ Capture indisponible : {e}")
+                log(f"Capture indisponible : {e}")
                 return
             # Nouvel enregistrement -> on repart d'une zone de texte VIDE
             # (tous les modes : Manuel / Auto-copie / Insérer).
@@ -2185,9 +2730,7 @@ class PlumeApp:
             if self.live_mode and not self.ai_mode:
                 # Direct : la zone vient d'être vidée ; on affine au fil de la
                 # parole (un thread dédié fait le streaming).
-                self._live_prefix = ""
-                self._live_committed = ""
-                self._live_commit_sample = 0
+                self._live = LiveSession(prefix="")
                 self._reveal_text_area()
                 self._stream_thread = threading.Thread(target=self._stream_worker,
                                                         daemon=True)
@@ -2204,11 +2747,13 @@ class PlumeApp:
             audio = self.recorder.stop()
             errs = self.recorder.consume_errors()
             if errs and audio.size == 0:
-                self.status_var.set("Capture : " + " ; ".join(errs)[:120])
+                self.status_var.set("⚠ " + describe_capture_error(errs))
                 self._update_idle_controls()
                 return
             if errs:
-                print("[Plume] erreurs capture (partielles) :", errs, file=sys.stderr)
+                log("Erreurs de capture (partielles) : " + " ; ".join(errs))
+                self._capture_warning = describe_capture_error(errs)
+            self._transcribing = True
             self.mic_btn.set_enabled(False)
             self.status_var.set("Transcription…")
             threading.Thread(target=self._transcribe_worker, args=(audio,),
@@ -2226,10 +2771,21 @@ class PlumeApp:
         self.status_var.set("Texte effacé.")
 
     def _tick_timer(self):
-        """Affiche la durée d'enregistrement (mise à jour chaque 0,5 s)."""
+        """Affiche la durée d'enregistrement (mise à jour chaque 0,5 s) et
+        surveille la capture : arrêt automatique si toutes les sources ont
+        échoué (micro débranché…) ou si la durée maximale est atteinte."""
         if not self.recording:
             return
         el = int(time.monotonic() - self._record_start)
+        if self.recorder.all_failed():
+            # Arrêt propre : le chemin d'arrêt affiche l'erreur de capture (ou
+            # transcrit ce qui a pu être capté avant la panne, puis l'affiche).
+            self._on_mic()
+            return
+        if el >= MAX_RECORD_SECONDS:
+            log(f"Durée maximale atteinte ({MAX_RECORD_SECONDS} s) : arrêt automatique")
+            self._on_mic()
+            return
         self.status_var.set(
             f"● Enregistrement… ({self._source_summary(18)})  {el // 60}:{el % 60:02d}")
         self.root.after(500, self._tick_timer)
@@ -2293,11 +2849,11 @@ class PlumeApp:
                 label = None
 
         if not label:
-            print("[Plume] Raccourci global indisponible (déjà pris ?).", file=sys.stderr)
+            log("Raccourci global indisponible (déjà pris par une autre application ?).")
             self.q.put(("hotkey_status", None))
             return
         self.q.put(("hotkey_status", label))
-        print(f"[Plume] Raccourci global actif : {label}", file=sys.stderr)
+        log(f"Raccourci global actif : {label}")
         try:
             msg = wintypes.MSG()
             while True:
@@ -2511,20 +3067,32 @@ class PlumeApp:
 # Auto-test
 # ---------------------------------------------------------------------------
 def run_selftest():
-    print("=== Auto-test Plume ===")
-    print(f"Modèle : {MODEL_SIZE} | SR : {SAMPLE_RATE} Hz | Langue : {LANGUAGE}")
+    print(f"=== Auto-test Plume {__version__} ===")
+    print(f"Python {sys.version.split()[0]} | SR : {SAMPLE_RATE} Hz | Langue : {LANGUAGE}")
+    print(f"Modèle demandé : {MODEL_SIZE or 'auto'} "
+          f"(GPU : {DEFAULT_GPU_MODEL}, CPU : {DEFAULT_CPU_MODEL}) | dossier : "
+          f"{MODEL_DIR or 'cache HuggingFace'}")
     print(f"VAD disponible (onnxruntime) : {VAD_FILTER}")
+    print(f"Capture audio disponible (soundcard, Windows) : {CAPTURE_AVAILABLE}")
+    print(f"Interface Tk disponible : {TK_AVAILABLE}")
     if ADDED_DLL_DIRS:
         print("Répertoires DLL CUDA ajoutés au PATH :")
         for d in ADDED_DLL_DIRS:
             print("   -", d)
     else:
-        print("Aucun répertoire DLL nvidia détecté (paquets CUDA pip absents ?).")
+        print("Aucun répertoire DLL nvidia détecté (paquets GPU non installés : "
+              "normal en installation CPU).")
 
     t0 = time.time()
-    model, backend = load_model()
+    try:
+        model, backend, size = load_model()
+    except ModelError as e:
+        print(f"\nÉCHEC : {e}")
+        print("=== Auto-test terminé : ÉCHEC ===")
+        return None
     load_dt = time.time() - t0
     print(f"\nBackend obtenu          : {backend}")
+    print(f"Modèle chargé           : {size}")
     print(f"Temps de chargement     : {load_dt:.1f}s (incl. passe de chauffe)")
 
     # Buffer synthétique : 2 s de ton sinusoïdal (signal non vocal -> texte
@@ -2550,15 +3118,28 @@ def run_selftest():
 # Point d'entrée
 # ---------------------------------------------------------------------------
 def main():
+    if "--version" in sys.argv:
+        print(f"Plume {__version__}")
+        return 0
     if "--selftest" in sys.argv:
-        run_selftest()
-        return
+        return 0 if run_selftest() else 1
 
+    if not TK_AVAILABLE:
+        fatal("L'interface graphique nécessite tkinter, absent de cette installation "
+              "de Python. Réinstallez Python (python.org) en cochant « tcl/tk and "
+              "IDLE », ou utilisez la version portable (exécutable).")
     _enable_dpi_awareness()
-    root = tk.Tk()
-    PlumeApp(root)
+    try:
+        root = tk.Tk()
+    except Exception as e:
+        fatal("Impossible d'ouvrir une fenêtre (Tk). " + str(e), e)
+    try:
+        PlumeApp(root)
+    except Exception as e:
+        fatal(f"Erreur au démarrage de l'interface ({type(e).__name__}) : {e}", e)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

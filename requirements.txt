@@ -1,17 +1,19 @@
-# Plume — dictée vocale locale — dépendances
-# Python 3.10+ (testé sur 3.13.13, Windows 11). Voir README.md.
+# Plume — dépendances d'exécution (installation CPU, fonctionne partout).
+# Python 3.11 à 3.13 (64 bits). Voir README.md — ou lancez install.bat.
 #
 #   python -m venv .venv
 #   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# Pour l'accélération GPU NVIDIA, installez PLUTÔT requirements-gpu.txt
+# (il inclut ce fichier et ajoute les bibliothèques CUDA, ~1,3 Go).
 
 # --- Cœur ---
-faster-whisper==1.2.1      # moteur Whisper ; tire ctranslate2, onnxruntime, tokenizers, av...
-soundcard==0.4.6           # capture audio : micros ET sorties (loopback WASAPI, Windows)
+faster-whisper==1.2.1      # moteur Whisper (API)
+ctranslate2==4.8.2         # backend d'inférence de faster-whisper (CPU int8 / CUDA)
+onnxruntime==1.29.0        # filtre VAD Silero (silences, anti-hallucinations)
+tokenizers==0.23.2         # tokenizer Whisper
+av==18.1.0                 # décodage audio (dépendance de faster-whisper)
+huggingface-hub==1.31.0    # téléchargement/cache des modèles
 numpy==2.4.6               # traitement / mixage des buffers audio
+soundcard==0.4.6           # capture audio : micros ET sorties (loopback WASAPI, Windows)
 pillow==12.3.0             # rendu anti-aliasé de l'interface (repli auto si absent)
-
-# --- Accélération GPU : CUDA 12 + cuDNN 9 pour CTranslate2 ---
-# Nécessaires pour device="cuda". Volumineux (~1,3 Go). Sans eux, ou en cas
-# d'échec de chargement, l'application bascule automatiquement sur le CPU (int8).
-nvidia-cublas-cu12==12.9.2.10
-nvidia-cudnn-cu12==9.23.0.39

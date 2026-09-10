@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff==0.16.6
+      - run: ruff check .
+
+  test:
+    name: Tests · ${{ matrix.os }} · Python ${{ matrix.python }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Cible réelle du projet : installation CPU sur Windows, sur la version
+          # minimale et la version maximale de Python prises en charge.
+          - os: windows-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.13"
+          # Linux : cœur + tests d'interface sous Xvfb (pas de capture audio).
+          - os: ubuntu-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    env:
+      PLUME_DEVICE: cpu
+      PLUME_MODEL: tiny
+      PLUME_MODEL_DIR: ${{ github.workspace }}/models
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install (CPU path, exactly as documented)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest==9.1.1
+
+      - name: Cache Whisper "tiny" model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: whisper-tiny-${{ runner.os }}-v1
+
+      - name: Unit tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest
+
+      - name: Unit tests (Linux, GUI under Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb python3-tk
+          xvfb-run -a -s "-screen 0 1024x768x24" python -m pytest
+
+      - name: Self-test (loads the model, CPU inference, no GUI)
+        run: python plume.py --selftest
+
+      - name: Version flag
+        run: python plume.py --version

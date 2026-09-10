@@ -22,3 +22,11 @@ _*.py
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Construction de l'exécutable (PyInstaller) ---
+build/
+dist/
+
+# --- Journal de l'application ---
+plume.log
+plume.log.old

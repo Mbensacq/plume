@@ -1,0 +1,30 @@
+Plume — dictée vocale locale (version portable Windows, CPU)
+=============================================================
+
+1. Décompressez ce dossier où vous voulez (clé USB comprise).
+2. Double-cliquez sur Plume.exe.
+3. Au premier lancement, le modèle Whisper est téléchargé (connexion internet
+   nécessaire une seule fois) dans le sous-dossier models\. Ensuite, tout
+   fonctionne hors ligne : aucun son ne quitte votre PC.
+
+Fichiers utiles
+---------------
+Plume.exe                 application (sans console)
+Plume-console.exe         même application avec une console : utile pour voir
+                          les messages en cas de problème, ou pour lancer
+                          « Plume-console.exe --selftest »
+plume_replacements.json   vos corrections personnalisées (« mot mal transcrit »
+                          -> « correction »), modifiable avec le Bloc-notes
+plume_config.json         vos préférences (créé automatiquement)
+plume.log                 journal (créé automatiquement)
+models\                   modèles Whisper téléchargés
+
+Cette version portable utilise le processeur (CPU) avec le modèle « small »
+par défaut. Vous pouvez choisir un autre modèle dans les Paramètres (roue
+dentée) : medium ou large-v3-turbo sont plus précis mais plus lents.
+Pour l'accélération GPU NVIDIA, installez Plume depuis les sources :
+https://github.com/Mbensacq/plume
+
+Windows peut afficher un avertissement SmartScreen au premier lancement
+(exécutable non signé) : « Informations complémentaires » puis « Exécuter
+quand même ».
