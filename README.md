@@ -222,7 +222,7 @@ messages, and a Tk smoke test that drives the window with a fake model.
 PyAV, tokenizers and soundcard into a one-folder build (~200 MB unpacked). The model is
 never bundled: it is downloaded on first launch into `models\` next to the executable.
 
-Pushing a tag such as `v1.0.1` runs the [release workflow](.github/workflows/release.yml):
+The portable bundle is also built and self-tested on every push by the CI `build` job (downloadable as a workflow artifact). Pushing a tag such as `v1.0.1` runs the [release workflow](.github/workflows/release.yml):
 it builds the bundle on `windows-latest`, runs `Plume-console.exe --selftest` on the frozen
 executable, and attaches the zip to a GitHub release.
 

@@ -83,3 +83,42 @@ jobs:
 
       - name: Version flag
         run: python plume.py --version
+
+  build:
+    # Prouve à chaque push que la version portable se construit et démarre :
+    # même recette que release.yml, sans publication (artefact conservé 7 jours).
+    name: Portable build (Windows x64, CPU)
+    needs: test
+    runs-on: windows-latest
+    env:
+      PLUME_DEVICE: cpu
+      PLUME_MODEL: tiny
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m PyInstaller Plume.spec --noconfirm --clean
+      - name: Smoke test the frozen executable
+        shell: pwsh
+        run: |
+          .\dist\Plume\Plume-console.exe --version
+          .\dist\Plume\Plume-console.exe --selftest
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
+          Remove-Item -Recurse -Force dist\Plume\models -ErrorAction SilentlyContinue
+          Copy-Item plume_replacements.json, LICENSE dist\Plume\
+          Copy-Item docs\LISEZMOI-portable.txt dist\Plume\LISEZMOI.txt
+          Get-ChildItem dist\Plume -Recurse | Measure-Object -Property Length -Sum |
+            ForEach-Object { "Bundle size: {0:N0} MB" -f ($_.Sum / 1MB) }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Plume-portable-windows-x64-cpu
+          path: dist/Plume
+          retention-days: 7
