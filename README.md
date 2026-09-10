@@ -219,7 +219,7 @@ messages, and a Tk smoke test that drives the window with a fake model.
 ```
 
 `Plume.spec` collects the native libraries of faster-whisper, CTranslate2, onnxruntime,
-PyAV, tokenizers and soundcard into a one-folder build (~200 MB unpacked). The model is
+PyAV, tokenizers and soundcard into a one-folder build (~280 MB unpacked, ~130 MB zipped). The model is
 never bundled: it is downloaded on first launch into `models\` next to the executable.
 
 The portable bundle is also built and self-tested on every push by the CI `build` job (downloadable as a workflow artifact). Pushing a tag such as `v1.0.1` runs the [release workflow](.github/workflows/release.yml):
