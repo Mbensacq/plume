@@ -451,7 +451,9 @@ def load_model(prefer_gpu=True, requested_size=None):
         log("Chargement CPU échoué : " + "".join(traceback.format_exception(e)))
         raise ModelError(describe_model_error(e, cpu_size, MODEL_DIR)) from e
     backend = "CPU"
-    if gpu_error is not None and not FORCE_CPU:
+    if gpu_error is not None and ADDED_DLL_DIRS:
+        # Les bibliothèques CUDA sont installées mais inutilisables (pilote,
+        # carte…) : on le signale ; en installation CPU, c'est le cas normal.
         backend = "CPU (GPU indisponible)"
     return model, backend, cpu_size
 
