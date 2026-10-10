@@ -1,0 +1,8 @@
+# Fins de ligne imposées quel que soit l'outil qui clone (git WSL ou Git for Windows) :
+# - scripts Windows en CRLF (cmd.exe gère mal les .bat en LF) ;
+# - scripts shell en LF (sinon « $'\r': command not found » sous WSL).
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.vbs  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf

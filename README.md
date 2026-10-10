@@ -59,7 +59,43 @@ automatically otherwise.
 > On first launch, the selected Whisper model (`large-v3` by default) is downloaded once
 > and cached locally; subsequent runs are fully offline.
 
-### Installation
+### Automatic installation (from WSL)
+
+On any Windows 10/11 x64 machine with WSL, one script installs and checks everything:
+
+```bash
+git clone https://github.com/Mbensacq/plume.git
+cd plume
+./install-wsl.sh
+```
+
+Then start Plume from Windows: **Start menu → Plume** (or double-click `lancer.bat`).
+
+Plume itself runs natively on Windows (WASAPI, Win32 hotkey and key insertion), not inside
+WSL. The script therefore drives the Windows side:
+
+1. Checks WSL and Windows interop.
+2. Places the repository on the Windows drive: in place if it is already there
+   (`/mnt/c/...`), otherwise a clone in `%USERPROFILE%\Plume` (override with `--dest`)
+   whose `origin` points to GitHub, so `lancer.bat` keeps it up to date.
+3. Runs `scripts/install-windows.ps1`, which installs, without admin rights where possible:
+   Python 3.13 x64 (winget, falling back to python.org), `.venv` and `requirements.txt`,
+   Git for Windows, Ollama and the AI-mode model, and Start menu / Desktop shortcuts.
+4. Verifies the result with `scripts/check_install.py`: unit tests, Tk, audio devices,
+   GPU, Whisper model (downloaded, loaded and run once) and an end-to-end AI reformulation.
+
+Options: `--dest C:\path\Plume`, `--no-ai`, `--no-git`, `--no-shortcuts`. The script is
+idempotent: run it again to repair, update the Windows copy or re-check everything.
+Without WSL, the Windows part can be run directly from the project root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+
+> First run downloads roughly 1.5 GB of Python packages, ~3 GB for Whisper `large-v3`
+> and ~5 GB for the default AI model (`llama3.1:8b`; skip it with `--no-ai`).
+
+### Manual installation
 
 ```powershell
 # From the project root, in PowerShell
@@ -132,7 +168,11 @@ Run the unit tests (pure functions: punctuation, replacements):
 ├── plume.ico                # Application icon
 ├── plume_replacements.json  # User-defined transcription corrections (editable)
 ├── Plume.vbs                # Double-click launcher (no console)
-└── lancer.bat               # Auto-updating launcher: git pull, then start the app
+├── lancer.bat               # Auto-updating launcher: git pull, then start the app
+├── install-wsl.sh           # One-shot setup from WSL (drives the Windows side)
+└── scripts/
+    ├── install-windows.ps1  # Windows setup: Python, .venv, Git, Ollama, shortcuts
+    └── check_install.py     # Post-install verification (tests, audio, GPU, model, AI)
 ```
 
 `plume.py` is intentionally kept as a single file for trivial deployment; constants and
