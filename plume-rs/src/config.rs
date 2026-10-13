@@ -186,6 +186,17 @@ impl Config {
             warnings.push("[transcription] modele vide ; \"large-v3-turbo\" utilisé".into());
             cfg.transcription.modele = TranscriptionConfig::default().modele;
         }
+        let kept = crate::text::vocabulary_within_budget(&cfg.transcription.vocabulaire).len();
+        let total = cfg.transcription.vocabulaire.iter().filter(|w| !w.trim().is_empty()).count();
+        if kept < total {
+            let ignored: Vec<&str> =
+                cfg.transcription.vocabulaire.iter().map(|w| w.trim()).filter(|w| !w.is_empty()).skip(kept).collect();
+            warnings.push(format!(
+                "[transcription] vocabulaire trop long : {} mot(s) ignoré(s) ({}). Retire des mots courants ou place les plus utiles en premier",
+                ignored.len(),
+                ignored.join(", ")
+            ));
+        }
         if !(100..=2_000).contains(&cfg.raccourci.appui_long_ms) {
             cfg.raccourci.appui_long_ms = ShortcutConfig::default().appui_long_ms;
         }
@@ -279,6 +290,15 @@ mod tests {
         assert_eq!(cfg.raccourci.touches, "Ctrl+Alt+Espace");
         assert_eq!(cfg.transcription.precision, 8);
         assert_eq!(cfg.transcription.langue, "fr");
+    }
+
+    #[test]
+    fn overlong_vocabulary_is_reported() {
+        let words: Vec<String> = (0..60).map(|i| format!("\"Terme{i:02}\"")).collect();
+        let (cfg, w) = Config::parse(&format!("[transcription]\nvocabulaire = [{}]\n", words.join(", ")));
+        assert_eq!(cfg.transcription.vocabulaire.len(), 60, "la liste est gardée telle quelle");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("Terme59"), "{}", w[0]);
     }
 
     #[test]

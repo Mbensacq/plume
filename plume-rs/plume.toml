@@ -44,6 +44,9 @@ gpu = true
 precision = 5
 
 # Mots que Whisper doit connaître : noms propres, jargon, marques…
+# Place limitée à environ 300 caractères (les premiers sont prioritaires) ;
+# Plume te prévient si la liste déborde. Les mots courants n'ont rien à faire
+# ici : utilise plutôt [corrections] pour leur orthographe.
 # Exemple : vocabulaire = ["GitHub", "Rust", "Kubernetes", "Plume"]
 vocabulaire = []
 

@@ -18,6 +18,14 @@ Elle contient des virgules, des points, des points d'interrogation ? Et parfois 
 
 /// Longueur maximale de texte précédent redonné à Whisper pour la continuité.
 const CONTEXT_CHARS: usize = 220;
+/// Budget total de l'amorce. whisper.cpp n'en garde que les 223 derniers
+/// jetons (≈ 3 caractères par jeton en français) : au-delà, le début de
+/// l'amorce, c'est-à-dire le vocabulaire, serait coupé sans prévenir.
+const PROMPT_MAX_CHARS: usize = 600;
+/// Place réservée au vocabulaire ; les mots en trop (en fin de liste) sont ignorés.
+pub const VOCAB_MAX_CHARS: usize = 300;
+/// Texte précédent gardé au minimum, même avec un long vocabulaire.
+const CONTEXT_MIN_CHARS: usize = 60;
 
 fn hallucination_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -248,7 +256,7 @@ fn strip_trailing_ellipsis_to_period(s: &str) -> String {
 /// texte déjà dicté (pour que la suite enchaîne naturellement).
 pub fn build_prompt(vocabulary: &[String], previous: &str) -> String {
     let mut p = String::new();
-    let words: Vec<&str> = vocabulary.iter().map(|w| w.trim()).filter(|w| !w.is_empty()).take(40).collect();
+    let words = vocabulary_within_budget(vocabulary);
     if !words.is_empty() {
         p.push_str("Vocabulaire : ");
         p.push_str(&words.join(", "));
@@ -257,10 +265,27 @@ pub fn build_prompt(vocabulary: &[String], previous: &str) -> String {
     p.push_str(STYLE_PROMPT);
     let prev = previous.trim();
     if !prev.is_empty() {
+        let room = PROMPT_MAX_CHARS.saturating_sub(p.chars().count() + 1).clamp(CONTEXT_MIN_CHARS, CONTEXT_CHARS);
         p.push(' ');
-        p.push_str(tail_at_word(prev, CONTEXT_CHARS));
+        p.push_str(tail_at_word(prev, room));
     }
     p
+}
+
+/// Les mots de vocabulaire qui tiennent dans [`VOCAB_MAX_CHARS`], dans l'ordre
+/// de la liste (les premiers sont prioritaires).
+pub fn vocabulary_within_budget(vocabulary: &[String]) -> Vec<&str> {
+    let mut used = 0;
+    let mut out = Vec::new();
+    for w in vocabulary.iter().map(|w| w.trim()).filter(|w| !w.is_empty()) {
+        let cost = w.chars().count() + if out.is_empty() { 0 } else { 2 };
+        if used + cost > VOCAB_MAX_CHARS {
+            break;
+        }
+        used += cost;
+        out.push(w);
+    }
+    out
 }
 
 /// Les `max` derniers caractères de `s`, en commençant sur un début de mot.
@@ -397,6 +422,25 @@ mod tests {
         let p = build_prompt(&[], &long);
         assert!(p.len() < STYLE_PROMPT.len() + CONTEXT_CHARS + 2);
         assert!(p.ends_with("mot"));
+    }
+
+    #[test]
+    fn long_vocabulary_never_crowds_out_style_or_overflows() {
+        let vocab: Vec<String> = (0..80).map(|i| format!("Terme{i:02}")).collect();
+        let kept = vocabulary_within_budget(&vocab);
+        assert!(kept.len() < 80, "la liste doit être bornée");
+        assert_eq!(kept[0], "Terme00", "les premiers mots sont prioritaires");
+        let p = build_prompt(&vocab, &"suite du texte ".repeat(50));
+        assert!(p.contains("soigneusement ponctuée"));
+        assert!(p.chars().count() <= PROMPT_MAX_CHARS + CONTEXT_MIN_CHARS, "{}", p.chars().count());
+        assert!(p.ends_with("texte"), "le contexte reste à la fin");
+    }
+
+    #[test]
+    fn short_vocabulary_keeps_full_context() {
+        let p = build_prompt(&["GitHub".into()], &"mot ".repeat(200));
+        let context = p.split(STYLE_PROMPT).nth(1).unwrap().trim();
+        assert!(context.chars().count() > CONTEXT_CHARS - 10, "{}", context.chars().count());
     }
 
     #[test]
