@@ -37,7 +37,7 @@ jobs:
     name: Tests (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -45,7 +45,7 @@ jobs:
         with:
           workspaces: plume-rs
       - name: Modèle de test (tiny) en cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: plume-rs/ci-modeles
           key: whisper-ggml-tiny-v1
@@ -91,7 +91,7 @@ jobs:
       GGML_NATIVE: "OFF"
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -112,7 +112,7 @@ jobs:
       - name: Compiler
         run: cargo build --release --no-default-features --features ${{ matrix.features }}
       - name: Modèle de test (tiny) en cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/plume-ci/modeles
           key: whisper-ggml-tiny-win-v1
@@ -147,7 +147,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\plume.exe") "dist\${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: plume-rs/dist/${{ matrix.asset }}
@@ -161,7 +161,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
