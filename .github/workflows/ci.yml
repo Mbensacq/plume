@@ -1,36 +1,33 @@
-name: Plume 2 (Rust)
+name: CI
 
-# Compile et teste Plume 2 à chaque modification de plume-rs/.
-# Les exécutables Windows sont téléchargeables dans l'onglet « Actions »
-# (section « Artifacts » de chaque exécution). Un tag v* publie une Release,
-# que la mise à jour automatique de Plume sait récupérer.
+# Compile et teste Plume à chaque push sur main, feature/** et fix/**, et sur
+# chaque pull request. Les exécutables Windows sont téléchargeables dans
+# l'onglet « Actions » (section « Artifacts » de chaque exécution). Un tag v*
+# publie une Release, que la mise à jour automatique de Plume sait récupérer.
+# Les modifications de documentation seule ne relancent pas la compilation.
 
 on:
   push:
     branches: ["main", "feature/**", "fix/**"]
     tags: ["v*"]
-    paths:
-      - "plume-rs/**"
-      - ".github/workflows/plume-rs.yml"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   pull_request:
-    paths:
-      - "plume-rs/**"
-      - ".github/workflows/plume-rs.yml"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: plume-rs-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-
-defaults:
-  run:
-    working-directory: plume-rs
 
 jobs:
   linux:
@@ -42,12 +39,10 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: plume-rs
       - name: Modèle de test (tiny) en cache
         uses: actions/cache@v6
         with:
-          path: plume-rs/ci-modeles
+          path: ci-modeles
           key: whisper-ggml-tiny-v1
       - name: Format
         run: cargo fmt --check
@@ -62,7 +57,7 @@ jobs:
           fi
       - name: Tests (dont le test de bout en bout en français)
         env:
-          PLUME_TEST_MODELE: ${{ github.workspace }}/plume-rs/ci-modeles/ggml-tiny.bin
+          PLUME_TEST_MODELE: ${{ github.workspace }}/ci-modeles/ggml-tiny.bin
         run: cargo test --release
 
   windows:
@@ -95,7 +90,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: plume-rs
           key: ${{ matrix.variant }}
           cache-targets: "false"
       - name: Vulkan SDK
@@ -150,7 +144,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
-          path: plume-rs/dist/${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
           if-no-files-found: error
 
   release:
@@ -166,7 +160,6 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Créer la Release
-        working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
