@@ -412,6 +412,30 @@ mod tests {
     }
 
     #[test]
+    fn period_before_a_lowercase_chunk_is_a_hesitation() {
+        // Coupé sur une hésitation : Whisper a jugé que la phrase continuait.
+        let mut acc = "Tout fonctionne très bien, je pense.".to_string();
+        join_chunk(&mut acc, "pousser et tout envoyer.");
+        assert_eq!(acc, "Tout fonctionne très bien, je pense pousser et tout envoyer.");
+        // Nouvelle phrase : le point reste.
+        let mut acc = "J'ai fait tous les tests.".to_string();
+        join_chunk(&mut acc, "Tout est parfait.");
+        assert_eq!(acc, "J'ai fait tous les tests. Tout est parfait.");
+        // Les autres fins de phrase ne sont pas touchées.
+        let mut acc = "Tu viens ?".to_string();
+        join_chunk(&mut acc, "on part à midi.");
+        assert_eq!(acc, "Tu viens ? on part à midi.");
+    }
+
+    #[test]
+    fn prompt_context_drops_the_final_period_only() {
+        let p = build_prompt(&[], "Tout fonctionne très bien, je pense.");
+        assert!(p.ends_with(" je pense"), "{p}");
+        let p = build_prompt(&[], "Tu viens ?");
+        assert!(p.ends_with("Tu viens ?"), "{p}");
+    }
+
+    #[test]
     fn continuation_keeps_proper_nouns_and_acronyms() {
         let mut acc = "J'ai parlé avec".to_string();
         join_chunk(&mut acc, "Paris hier");
