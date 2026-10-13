@@ -7,12 +7,14 @@
 //! Règles de coupe (son à 16 kHz, analysé par trames de 30 ms) :
 //! - un morceau d'au moins `min_chunk_ms` est coupé à la première pause d'au
 //!   moins `pause_ms` ;
-//! - un silence très long (`long_silence_ms`) coupe même un morceau court ;
+//! - un long silence (`long_silence_ms`, 3 s) coupe même un morceau court : une
+//!   simple hésitation ne doit pas couper une phrase en deux ;
 //! - un morceau qui atteint `max_chunk_ms` sans pause est coupé à l'endroit le
 //!   plus calme de ses dernières secondes (jamais en plein mot si possible).
 //!
-//! Chaque morceau est ensuite « resserré » : les longs silences sont raccourcis
-//! (Whisper invente du texte sur les silences) et les morceaux sans parole sont
+//! Chaque morceau est ensuite « resserré » : les silences intérieurs sont
+//! ramenés à 0,4 s (Whisper invente du texte sur les silences, et prend une
+//! longue pause pour une fin de phrase) et les morceaux sans parole sont
 //! ignorés.
 
 use crate::SAMPLE_RATE;
@@ -45,9 +47,9 @@ impl Default for SegmenterConfig {
             pause_ms: 600,
             min_chunk_ms: 6_000,
             max_chunk_ms: 25_000,
-            long_silence_ms: 1_200,
+            long_silence_ms: 3_000,
             keep_pad_ms: 400,
-            max_inner_silence_ms: 1_500,
+            max_inner_silence_ms: 400,
             min_speech_ms: 200,
             speech_margin_db: 6.0,
         }
@@ -423,9 +425,20 @@ mod tests {
     fn long_silence_cuts_even_short_chunks() {
         let mut seg = Segmenter::new(SegmenterConfig::default());
         let mut a = voice(1_500);
-        a.extend(hiss(1_500));
+        a.extend(hiss(3_200));
         let chunks = feed(&mut seg, &a);
         assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn hesitation_in_a_short_dictation_does_not_cut() {
+        let mut seg = Segmenter::new(SegmenterConfig::default());
+        let mut a = voice(2_000);
+        a.extend(hiss(1_500)); // « je pense… »
+        a.extend(voice(2_000));
+        assert!(feed(&mut seg, &a).is_empty(), "une hésitation ne coupe pas la phrase");
+        let c = seg.finish().unwrap();
+        assert!((3_900..=4_100).contains(&(c.speech_ms as usize)), "{}", c.speech_ms);
     }
 
     #[test]
@@ -465,8 +478,9 @@ mod tests {
         a.extend(voice(1_000));
         feed(&mut seg, &a);
         let c = seg.finish().unwrap();
-        // 2 s de parole + 1,5 s de silence intérieur max + marges de fin.
-        assert!(ms(&c) <= 2_000 + 1_500 + 450, "{}", ms(&c));
+        // 2 s de parole + silence intérieur raccourci + marges de fin.
+        let inner = SegmenterConfig::default().max_inner_silence_ms as usize;
+        assert!(ms(&c) <= 2_000 + inner + 450, "{}", ms(&c));
         assert_eq!(c.source_ms, 7_020);
     }
 

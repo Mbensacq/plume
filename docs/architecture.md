@@ -111,9 +111,9 @@ si elle dépasse le **bruit de fond**, estimé en continu, de 6 dB.
 |---|---|---|
 | `min_chunk_ms` | 6 000 | Un morceau d'au moins 6 s est coupé à la première pause… |
 | `pause_ms` | 600 | … d'au moins 0,6 s |
-| `long_silence_ms` | 1 200 | Un silence de 1,2 s coupe même un morceau court |
+| `long_silence_ms` | 3 000 | Un silence de 3 s coupe même un morceau court (une hésitation, plus courte, ne coupe pas la phrase) |
 | `max_chunk_ms` | 25 000 | Sans pause pendant 25 s : coupe à l'endroit le plus calme des dernières secondes |
-| `max_inner_silence_ms` | 1 500 | Les silences internes plus longs sont raccourcis (Whisper invente du texte sur les silences) |
+| `max_inner_silence_ms` | 400 | Les silences internes plus longs sont ramenés à 0,4 s : Whisper invente du texte sur les silences et prend une longue pause pour une fin de phrase |
 | `keep_pad_ms` | 400 | Silence gardé autour de la parole |
 | `min_speech_ms` | 200 | En dessous, le morceau est ignoré (clic, souffle) |
 | `speech_margin_db` | 6 | Marge au-dessus du bruit de fond |
@@ -145,7 +145,9 @@ Avant chaque morceau, Whisper reçoit un texte d'amorce, dans cet ordre :
 1. `Vocabulaire : …` : les mots de `[transcription] vocabulaire`, dans la
    limite de 300 caractères (les premiers de la liste sont prioritaires) ;
 2. une phrase de style qui pousse Whisper à ponctuer ;
-3. la fin du texte déjà dicté, pour que la suite enchaîne naturellement.
+3. la fin du texte déjà dicté, **sans son point final**, pour que la suite
+   enchaîne naturellement : Whisper décide lui-même si le morceau continue la
+   phrase (il commence alors en minuscule) ou en commence une nouvelle.
 
 L'ensemble est limité à 600 caractères, car whisper.cpp ne garde que les
 223 derniers jetons de l'amorce et couperait **le début**, donc le
@@ -156,7 +158,7 @@ vocabulaire. Les réglages signalent les mots qui dépassent.
 | Étape | Fonction | Ce qu'elle fait |
 |---|---|---|
 | Par morceau | `clean_chunk` | Espaces, « … » de début et de fin (morceau coupé en pleine phrase), répétitions en boucle |
-| Assemblage | `join_chunk` | Raccorde les morceaux ; minuscule au début du suivant si la phrase n'était pas finie |
+| Assemblage | `join_chunk` | Raccorde les morceaux. Whisper finit chaque morceau par un point, même coupé sur une hésitation : si le morceau suivant commence en minuscule, la phrase continuait et ce point est retiré |
 | Final | `finalize` | Corrections, répétitions, espaces avant `,` `.`, majuscule initiale, point final |
 
 Les **corrections** (`[corrections]` de `plume.toml`) portent sur des mots
