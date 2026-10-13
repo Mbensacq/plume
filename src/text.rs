@@ -134,6 +134,18 @@ pub fn join_chunk(acc: &mut String, next: &str) {
         acc.push_str(next);
         return;
     }
+    // Whisper termine chaque morceau par un point, même coupé en pleine phrase
+    // (hésitation). L'amorce du morceau suivant ne contient pas ce point (voir
+    // `build_prompt`) : s'il commence en minuscule, Whisper a jugé que la phrase
+    // continuait, et le point est retiré.
+    let trimmed = acc.trim_end();
+    if trimmed.ends_with('.') && !trimmed.ends_with("..") && next.chars().next().is_some_and(char::is_lowercase) {
+        let keep = trimmed.len() - 1;
+        acc.truncate(keep);
+        acc.push(' ');
+        acc.push_str(next);
+        return;
+    }
     let sentence_done =
         acc.trim_end().chars().last().is_some_and(|c| matches!(c, '.' | '!' | '?' | '…' | ':' | '»' | '"'));
     let next = if sentence_done { next.to_string() } else { lowercase_continuation(next) };
@@ -263,7 +275,9 @@ pub fn build_prompt(vocabulary: &[String], previous: &str) -> String {
         p.push_str(". ");
     }
     p.push_str(STYLE_PROMPT);
-    let prev = previous.trim();
+    // Sans son point final, la fin du texte précédent laisse Whisper décider si
+    // le morceau suivant continue la phrase (minuscule) ou en commence une.
+    let prev = previous.trim().trim_end_matches(['.', '…']).trim_end();
     if !prev.is_empty() {
         let room = PROMPT_MAX_CHARS.saturating_sub(p.chars().count() + 1).clamp(CONTEXT_MIN_CHARS, CONTEXT_CHARS);
         p.push(' ');
