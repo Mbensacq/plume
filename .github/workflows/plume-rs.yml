@@ -85,6 +85,10 @@ jobs:
       # Exécutable autonome : pas besoin d'installer le runtime Visual C++.
       RUSTFLAGS: -C target-feature=+crt-static
       CMAKE_MSVC_RUNTIME_LIBRARY: MultiThreaded
+      # Pas d'optimisation pour le processeur du serveur de compilation (il
+      # peut avoir AVX-512, absent de beaucoup de PC) : base AVX2, valable
+      # pour tous les processeurs depuis 2013.
+      GGML_NATIVE: "OFF"
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +139,7 @@ jobs:
           }
           Write-Host (Invoke-Plume @("--version"))
           Invoke-Plume @("--telecharger-modele", "tiny") | Out-Null
-          $text = Invoke-Plume @("--transcrire", "tests\data\librivox-fr-12s.wav", "--precision", "1")
+          $text = Invoke-Plume @("--transcrire", "tests\data\librivox-fr-12s.wav", "--modele", "tiny", "--precision", "1")
           Write-Host "Texte : $text"
           if ($text -notmatch "chapitre") { throw "transcription inattendue" }
       - name: Préparer l'exécutable
