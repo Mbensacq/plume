@@ -13,6 +13,10 @@ directly into the active window.
 > Everything runs locally. After the Whisper model is downloaded once, the application
 > works fully offline and no audio ever leaves the machine.
 
+> **Plume 2 (Rust)** — a rewrite focused on speed and reliability (transcription while
+> you speak, push-to-talk or toggle shortcut, paste at the cursor, single executable)
+> lives in [`plume-rs/`](plume-rs/README.md). Its documentation is in French.
+
 ## Overview
 
 Plume is a small desktop tool built around a single Tkinter window: pick one or more

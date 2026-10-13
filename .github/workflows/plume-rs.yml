@@ -1,0 +1,158 @@
+name: Plume 2 (Rust)
+
+# Compile et teste Plume 2 à chaque modification de plume-rs/.
+# Les exécutables Windows sont téléchargeables dans l'onglet « Actions »
+# (section « Artifacts » de chaque exécution). Un tag v* publie une Release,
+# que la mise à jour automatique de Plume sait récupérer.
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    tags: ["v*"]
+    paths:
+      - "plume-rs/**"
+      - ".github/workflows/plume-rs.yml"
+  pull_request:
+    paths:
+      - "plume-rs/**"
+      - ".github/workflows/plume-rs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plume-rs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: plume-rs
+
+jobs:
+  linux:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plume-rs
+      - name: Modèle de test (tiny) en cache
+        uses: actions/cache@v4
+        with:
+          path: plume-rs/ci-modeles
+          key: whisper-ggml-tiny-v1
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Télécharger le modèle de test
+        run: |
+          mkdir -p ci-modeles
+          if [ ! -f ci-modeles/ggml-tiny.bin ]; then
+            curl -fsSL --retry 3 -o ci-modeles/ggml-tiny.bin \
+              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+          fi
+      - name: Tests (dont le test de bout en bout en français)
+        env:
+          PLUME_TEST_MODELE: ${{ github.workspace }}/plume-rs/ci-modeles/ggml-tiny.bin
+        run: cargo test --release
+
+  windows:
+    name: Windows (${{ matrix.variant }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: carte-graphique
+            features: vulkan
+            asset: plume-windows-x64.exe
+          - variant: processeur
+            features: moteur
+            asset: plume-windows-x64-cpu.exe
+    env:
+      # Exécutable autonome : pas besoin d'installer le runtime Visual C++.
+      RUSTFLAGS: -C target-feature=+crt-static
+      CMAKE_MSVC_RUNTIME_LIBRARY: MultiThreaded
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plume-rs
+          key: ${{ matrix.variant }}
+      - name: Vulkan SDK
+        if: matrix.features == 'vulkan'
+        shell: pwsh
+        run: |
+          $v = "1.4.313.2"
+          $exe = "$env:RUNNER_TEMP\vulkan-sdk.exe"
+          curl.exe -fsSL --retry 3 -o $exe "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+          & $exe --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) { throw "installation du Vulkan SDK : code $LASTEXITCODE" }
+          "VULKAN_SDK=C:\VulkanSDK\$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "C:\VulkanSDK\$v\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Compiler
+        run: cargo build --release --no-default-features --features ${{ matrix.features }}
+      - name: Modèle de test (tiny) en cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/plume-ci/modeles
+          key: whisper-ggml-tiny-win-v1
+      - name: Tests unitaires
+        run: cargo test --release --no-default-features --features ${{ matrix.features }} --lib --bins
+      - name: Essai réel de plume.exe (téléchargement + transcription en français)
+        shell: pwsh
+        env:
+          PLUME_DOSSIER: ${{ runner.temp }}\plume-ci
+        run: |
+          $exe = ".\target\release\plume.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "plume --version : code $LASTEXITCODE" }
+          & $exe --telecharger-modele tiny
+          if ($LASTEXITCODE -ne 0) { throw "téléchargement du modèle : code $LASTEXITCODE" }
+          $text = & $exe --transcrire tests\data\librivox-fr-12s.wav --precision 1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "transcription : code $LASTEXITCODE" }
+          Write-Host "Texte : $text"
+          if ($text -notmatch "chapitre") { throw "transcription inattendue" }
+      - name: Préparer l'exécutable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\plume.exe "dist\${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: plume-rs/dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publier la version
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Créer la Release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.exe \
+            --repo "${{ github.repository }}" \
+            --title "Plume ${{ github.ref_name }}" \
+            --notes "Télécharge plume-windows-x64.exe (carte graphique) ou plume-windows-x64-cpu.exe (processeur seul)."

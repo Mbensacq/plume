@@ -1,0 +1,66 @@
+[package]
+name = "plume"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Dictée vocale locale (Whisper) déclenchée par un raccourci, texte collé au curseur."
+repository = "https://github.com/Mbensacq/plume"
+publish = false
+
+# Le cœur (découpage, texte, moteur, configuration) est une bibliothèque
+# indépendante de Windows : elle pourra servir plus tard à une version Android.
+[lib]
+name = "plume_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "plume"
+path = "src/main.rs"
+
+[features]
+default = ["moteur"]
+# Moteur de transcription Whisper (whisper.cpp). Sans lui, seule la partie
+# Windows et les tests purs compilent (utile pour vérifier le code ailleurs).
+moteur = ["dep:whisper-rs"]
+# Accélération graphique. Vulkan : fonctionne avec le pilote de n'importe quelle
+# carte récente (NVIDIA, AMD, Intel), sans rien installer de plus.
+vulkan = ["moteur", "whisper-rs/vulkan"]
+# CUDA : NVIDIA uniquement ; demande le CUDA Toolkit pour compiler et ses DLL
+# (plusieurs centaines de Mo) pour fonctionner.
+cuda = ["moteur", "whisper-rs/cuda"]
+
+[dependencies]
+anyhow = "1.0.104"
+hound = "3.5.1"
+log = { version = "0.4.34", features = ["std"] }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1.8"
+ureq = { version = "3.4.2", features = ["platform-verifier"] }
+whisper-rs = { version = "0.16.0", optional = true, features = ["log_backend"] }
+
+[target.'cfg(windows)'.dependencies]
+arboard = "3.6.1"
+cpal = "0.18.2"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[build-dependencies]
+winresource = "0.1.34"

@@ -1,0 +1,85 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Plume — réglages
+#
+#  Modifie ce fichier avec n'importe quel éditeur de texte, enregistre, puis
+#  clic droit sur l'icône de Plume (près de l'horloge) > « Recharger les réglages ».
+#  Une ligne qui commence par # est un commentaire : elle est ignorée.
+#  En cas d'erreur, Plume te le signale et garde les réglages par défaut.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[raccourci]
+# Combinaison qui lance la dictée. Exemples :
+#   "Ctrl+Alt+Espace"   "Ctrl+Maj+F9"   "F13"   "Menu"   "Pause"
+#   "Ctrl+Souris4" (bouton latéral « précédent »)   "Alt+Souris5"   "Ctrl+Molette"
+# Modificateurs : Ctrl, Alt, Maj, Win. Une seule touche principale.
+# La touche principale est « avalée » : elle n'arrive pas à l'application active.
+touches = "Ctrl+Alt+Espace"
+
+# auto      : appui court = démarrer, nouvel appui = arrêter ;
+#             appui long  = parler tant que c'est maintenu, relâcher = arrêter.
+# maintenir : parler tant que le raccourci est maintenu.
+# basculer  : un appui démarre, l'appui suivant arrête.
+mode = "auto"
+
+# Échap pendant l'enregistrement : annule la dictée (rien n'est écrit).
+annuler_avec_echap = true
+
+[transcription]
+# Modèle Whisper, téléchargé automatiquement au premier lancement :
+#   "large-v3-turbo"  874 Mo  — très proche de large-v3, bien plus rapide (conseillé)
+#   "large-v3"        3,1 Go  — le plus précis, plus lent (celui de Plume 1)
+#   "medium"          823 Mo  — "small" 264 Mo — "base" 148 Mo — "tiny" 78 Mo
+# On peut aussi donner le chemin complet d'un fichier .bin (format whisper.cpp).
+modele = "large-v3-turbo"
+
+# Langue parlée : "fr", "en", … ou "auto" pour la détecter à chaque morceau.
+# Avec "fr", les mots anglais et techniques restent bien reconnus.
+langue = "fr"
+
+# Utiliser la carte graphique (bien plus rapide). Repli automatique sur le
+# processeur si elle n'est pas utilisable.
+gpu = true
+
+# Précision du décodage, de 1 (le plus rapide) à 8 (le plus soigné).
+precision = 5
+
+# Mots que Whisper doit connaître : noms propres, jargon, marques…
+# Exemple : vocabulaire = ["GitHub", "Rust", "Kubernetes", "Plume"]
+vocabulaire = []
+
+[sortie]
+# coller         : le texte est collé là où se trouve le curseur (rapide, fiable).
+# taper          : le texte est tapé lettre par lettre (pour les rares
+#                  applications ou jeux qui refusent le collage).
+# presse-papiers : le texte est seulement copié ; tu colles toi-même.
+mode = "coller"
+
+# Ajoute une espace après le texte, pour enchaîner les dictées.
+espace_final = true
+
+# Après un collage, remet ce qu'il y avait avant dans le presse-papiers.
+restaurer_presse_papiers = true
+
+[interface]
+# Petit indicateur à l'écran pendant l'écoute et la transcription.
+indicateur = true
+# Position de l'indicateur : "bas" ou "haut" de l'écran.
+position = "bas"
+
+[audio]
+# Micro à utiliser : vide = micro par défaut de Windows. Sinon, une partie de
+# son nom tel qu'affiché dans Windows, par exemple "Yeti" ou "Headset".
+micro = ""
+
+[divers]
+# Garde toutes les dictées, horodatées, dans historique.txt.
+historique = true
+# Vérifie au démarrage s'il existe une nouvelle version et l'installe
+# (active au lancement suivant).
+mise_a_jour_auto = true
+
+[corrections]
+# Mot ou expression mal reconnu = ce qu'il faut écrire à la place.
+# Mots entiers, majuscules ignorées. Exemples :
+# "git eub" = "GitHub"
+"discorde" = "Discord"
