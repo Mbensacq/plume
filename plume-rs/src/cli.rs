@@ -30,6 +30,8 @@ pub fn run(args: &[String]) -> i32 {
     let result = match args[0].as_str() {
         "--version" | "-V" => {
             println!("plume {}", plume_core::VERSION);
+            #[cfg(feature = "moteur")]
+            println!("moteur : {}", plume_core::engine::system_info());
             Ok(())
         }
         "--aide" | "--help" | "-h" | "/?" => {

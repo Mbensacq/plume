@@ -71,6 +71,7 @@ impl Engine {
                     };
                     match engine.warm_up() {
                         Ok(()) => {
+                            log::info!("moteur : {}", system_info());
                             log::info!(
                                 "modèle {} chargé sur {} en {:.1} s",
                                 settings.model_path.display(),
@@ -168,6 +169,11 @@ impl Engine {
             (0..n).map(|i| 0.01 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / n as f32).sin()).collect();
         self.transcribe(&tone, "").map(|_| ())
     }
+}
+
+/// Version de whisper.cpp et jeux d'instructions utilisés (AVX2…), pour le diagnostic.
+pub fn system_info() -> String {
+    format!("whisper.cpp {} — {}", whisper_rs::get_whisper_version(), whisper_rs::print_system_info().trim())
 }
 
 fn thread_count(setting: u32) -> i32 {
