@@ -20,8 +20,13 @@ use plume_core::paths::Paths;
 use plume_core::pipeline::EngineEvent;
 use plume_core::trigger::Input;
 use std::sync::mpsc;
-use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use windows_sys::Win32::Foundation::{
+    ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+use windows_sys::Win32::System::Console::{
+    ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
@@ -65,9 +70,32 @@ pub enum MenuCommand {
 
 /// Rattache la sortie à la console qui a lancé Plume (commandes en ligne).
 pub fn attach_parent_console() {
-    // SAFETY: sans effet si Plume n'a pas été lancé depuis une console.
+    // SAFETY: sans effet si Plume n'a pas été lancé depuis une console ; les
+    // poignées ouvertes restent valides jusqu'à la fin du processus.
     unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return; // pas de console parente (sorties éventuellement redirigées)
+        }
+        // Un programme « fenêtré » n'a pas de sorties standard : on les relie à
+        // la console, sauf si elles ont déjà été redirigées (fichier, tube).
+        for id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(id);
+            if h.is_null() || h == INVALID_HANDLE_VALUE {
+                let name = win::wide("CONOUT$");
+                let con = CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                );
+                if con != INVALID_HANDLE_VALUE {
+                    SetStdHandle(id, con);
+                }
+            }
+        }
     }
 }
 

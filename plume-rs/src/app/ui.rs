@@ -19,8 +19,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, CreateBitmap, CreateDIBSection, CreateFontW, CreateRoundRectRgn,
     CreateSolidBrush, DIB_RGB_COLORS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW,
     Ellipse, EndPaint, FW_SEMIBOLD, FillRect, GetDC, GetMonitorInfoW, GetStockObject, GetTextExtentPoint32W, HFONT,
-    InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, NULL_PEN, PAINTSTRUCT, ReleaseDC,
-    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+    InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, NULL_PEN,
+    PAINTSTRUCT, ReleaseDC, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
@@ -32,11 +32,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
     DestroyWindow, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, HICON,
     HWND_TOPMOST, ICONINFO, IDC_ARROW, KillTimer, LoadCursorW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TPM_BOTTOMALIGN,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_LBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP,
+    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SPI_GETWORKAREA, SW_HIDE, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_CLOSE,
+    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_OVERLAPPED, WS_POPUP,
 };
 
 const WM_APP_REFRESH: u32 = 0x8000 + 1;
@@ -501,11 +501,17 @@ fn update_overlay(ui: &Shared, s: &UiState) {
 
         let h = px(36);
         let w = size.cx + px(16 + 10 + 10 + 18);
-        let monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        // Écran de la fenêtre active ; à défaut, l'écran principal.
+        let flag = if fg.is_null() { MONITOR_DEFAULTTOPRIMARY } else { MONITOR_DEFAULTTONEAREST };
+        let monitor = MonitorFromWindow(fg, flag);
         let mut mi: MONITORINFO = std::mem::zeroed();
         mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(monitor, &mut mi);
-        let work: RECT = mi.rcWork;
+        let mut work: RECT = mi.rcWork;
+        if GetMonitorInfoW(monitor, &mut mi) != 0 {
+            work = mi.rcWork;
+        } else {
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut work as *mut RECT).cast(), 0);
+        }
         let x = work.left + (work.right - work.left - w) / 2;
         let y = match s.position {
             IndicatorPosition::Bas => work.bottom - h - px(48),

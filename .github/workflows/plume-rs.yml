@@ -79,6 +79,9 @@ jobs:
             features: moteur
             asset: plume-windows-x64-cpu.exe
     env:
+      # Dossier de compilation court : les shaders Vulkan dépassent sinon la
+      # limite de 260 caractères des chemins Windows.
+      CARGO_TARGET_DIR: C:\t
       # Exécutable autonome : pas besoin d'installer le runtime Visual C++.
       RUSTFLAGS: -C target-feature=+crt-static
       CMAKE_MSVC_RUNTIME_LIBRARY: MultiThreaded
@@ -90,6 +93,7 @@ jobs:
         with:
           workspaces: plume-rs
           key: ${{ matrix.variant }}
+          cache-targets: "false"
       - name: Vulkan SDK
         if: matrix.features == 'vulkan'
         shell: pwsh
@@ -115,20 +119,30 @@ jobs:
         env:
           PLUME_DOSSIER: ${{ runner.temp }}\plume-ci
         run: |
-          $exe = ".\target\release\plume.exe"
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { throw "plume --version : code $LASTEXITCODE" }
-          & $exe --telecharger-modele tiny
-          if ($LASTEXITCODE -ne 0) { throw "téléchargement du modèle : code $LASTEXITCODE" }
-          $text = & $exe --transcrire tests\data\librivox-fr-12s.wav --precision 1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw "transcription : code $LASTEXITCODE" }
+          # plume.exe est un programme « fenêtré » : PowerShell ne l'attend pas
+          # tout seul, d'où Start-Process -Wait avec sorties dans des fichiers.
+          $exe = Join-Path $env:CARGO_TARGET_DIR "release\plume.exe"
+          function Invoke-Plume([string[]]$PlumeArgs) {
+            $out = Join-Path $env:RUNNER_TEMP "plume-out.txt"
+            $err = Join-Path $env:RUNNER_TEMP "plume-err.txt"
+            $p = Start-Process -FilePath $exe -ArgumentList $PlumeArgs -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+            $o = Get-Content $out -Raw -Encoding utf8
+            $e = Get-Content $err -Raw -Encoding utf8
+            if ($e) { Write-Host $e }
+            if ($p.ExitCode -ne 0) { throw "plume $($PlumeArgs -join ' ') : code $($p.ExitCode)" }
+            return "$o"
+          }
+          Write-Host (Invoke-Plume @("--version"))
+          Invoke-Plume @("--telecharger-modele", "tiny") | Out-Null
+          $text = Invoke-Plume @("--transcrire", "tests\data\librivox-fr-12s.wav", "--precision", "1")
           Write-Host "Texte : $text"
           if ($text -notmatch "chapitre") { throw "transcription inattendue" }
       - name: Préparer l'exécutable
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\plume.exe "dist\${{ matrix.asset }}"
+          Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\plume.exe") "dist\${{ matrix.asset }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

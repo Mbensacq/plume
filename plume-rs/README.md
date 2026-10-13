@@ -162,16 +162,21 @@ Prérequis Windows : [Rust](https://rustup.rs), Visual Studio Build Tools
 
 ```powershell
 cd plume-rs
+# Dossier de compilation court : la compilation Vulkan dépasse sinon la
+# limite de 260 caractères des chemins Windows.
+$env:CARGO_TARGET_DIR = "C:\t"
 cargo build --release --features vulkan     # carte graphique (Vulkan)
 cargo build --release                       # processeur seulement
 cargo test --release                        # tests
 ```
 
+L'exécutable se trouve alors dans `C:\t\release\plume.exe`.
+
 Transcrire un fichier avec exactement le même traitement qu'une dictée, et
 mesurer le délai après l'arrêt :
 
 ```powershell
-.\target\release\plume.exe --transcrire dictee.wav --temps-reel
+C:\t\release\plume.exe --transcrire dictee.wav --temps-reel
 ```
 
 Test de bout en bout avec un vrai modèle :
