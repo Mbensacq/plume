@@ -80,6 +80,9 @@ historique = true
 # Vérifie au démarrage s'il existe une nouvelle version et l'installe
 # (active au lancement suivant).
 mise_a_jour_auto = true
+# Lance Plume à l'ouverture de ta session Windows. Mettre false pour l'éviter
+# (pris en compte dès « Recharger les réglages »).
+lancer_au_demarrage = true
 
 [corrections]
 # Mot ou expression mal reconnu = ce qu'il faut écrire à la place.

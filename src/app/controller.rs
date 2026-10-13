@@ -302,6 +302,7 @@ impl Controller {
         self.machine.set_mode(new.raccourci.mode, Duration::from_millis(new.raccourci.appui_long_ms));
         let engine_changed = engine_settings_changed(&old.transcription, &new.transcription);
         let (indicator, position) = (new.interface.indicateur, new.interface.position);
+        super::startup::sync(new.divers.lancer_au_demarrage);
         if let Ok(mut c) = self.cfg.lock() {
             *c = new;
         }

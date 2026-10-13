@@ -129,11 +129,13 @@ pub struct AudioConfig {
 pub struct MiscConfig {
     pub historique: bool,
     pub mise_a_jour_auto: bool,
+    /// Lancer Plume à l'ouverture de la session Windows.
+    pub lancer_au_demarrage: bool,
 }
 
 impl Default for MiscConfig {
     fn default() -> Self {
-        MiscConfig { historique: true, mise_a_jour_auto: true }
+        MiscConfig { historique: true, mise_a_jour_auto: true, lancer_au_demarrage: true }
     }
 }
 
@@ -259,6 +261,8 @@ mod tests {
             mode = "presse-papiers"
             [interface]
             position = "haut"
+            [divers]
+            lancer_au_demarrage = false
             [corrections]
             "git eub" = "GitHub"
             "#,
@@ -271,6 +275,8 @@ mod tests {
         assert_eq!(cfg.sortie.mode, OutputMode::Clipboard);
         assert_eq!(cfg.interface.position, IndicatorPosition::Haut);
         assert_eq!(cfg.corrections.get("git eub").map(String::as_str), Some("GitHub"));
+        assert!(!cfg.divers.lancer_au_demarrage);
+        assert!(Config::default().divers.lancer_au_demarrage);
     }
 
     #[test]

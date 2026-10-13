@@ -12,8 +12,11 @@ mod audio;
 mod controller;
 mod hooks;
 mod output;
+mod startup;
 mod ui;
 mod win;
+
+pub use startup::STARTUP_ARG;
 
 use plume_core::config::Config;
 use plume_core::paths::Paths;
@@ -109,13 +112,22 @@ fn single_instance() -> bool {
     }
 }
 
-pub fn run() -> i32 {
+/// `at_startup` : lancé par Windows à l'ouverture de session.
+pub fn run(at_startup: bool) -> i32 {
     let paths = Paths::detect();
     plume_core::logging::init(&paths.log_file(), false);
-    log::info!("Plume {} démarre (dossier : {})", plume_core::VERSION, paths.root().display());
+    log::info!(
+        "Plume {} démarre{} (dossier : {})",
+        plume_core::VERSION,
+        if at_startup { " avec Windows" } else { "" },
+        paths.root().display()
+    );
 
     if !single_instance() {
-        win::message_box("Plume est déjà lancé : son icône se trouve près de l'horloge.", false);
+        // Lancement automatique alors que Plume tourne déjà : rien à signaler.
+        if !at_startup {
+            win::message_box("Plume est déjà lancé : son icône se trouve près de l'horloge.", false);
+        }
         return 0;
     }
     // SAFETY: réglage du processus, avant la création de toute fenêtre.
@@ -131,6 +143,7 @@ pub fn run() -> i32 {
     for w in &warnings {
         log::warn!("réglages : {w}");
     }
+    startup::sync(cfg.divers.lancer_au_demarrage);
 
     let (tx, rx) = mpsc::channel::<Event>();
     let hotkey = cfg.hotkey();

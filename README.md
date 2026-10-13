@@ -31,8 +31,9 @@ sur la carte graphique quand c'est possible. Rien ne quitte l'ordinateur.
    `large-v3-turbo`). L'avancement s'affiche à l'écran ; tu peux déjà dicter,
    le texte arrivera dès que le modèle sera prêt.
 
-Pour lancer Plume avec Windows : `Win + R`, tape `shell:startup`, puis place
-dans ce dossier un raccourci vers `plume.exe`.
+Plume se lance ensuite tout seul à l'ouverture de ta session Windows. Pour
+l'éviter : `lancer_au_demarrage = false` dans `plume.toml` (section
+`[divers]`).
 
 Configuration requise : Windows 10 ou 11 (64 bits). Pour la carte graphique,
 un pilote à jour (NVIDIA, AMD ou Intel, via Vulkan). Sans carte graphique
@@ -69,7 +70,7 @@ puis « Recharger les réglages ».
 | `[sortie]` | `coller`, `taper` ou `presse-papiers` ; espace finale ; restauration du presse-papiers |
 | `[interface]` | Indicateur affiché ou non, en haut ou en bas |
 | `[audio]` | Micro à utiliser (vide = micro par défaut de Windows) |
-| `[divers]` | Historique des dictées, mise à jour automatique |
+| `[divers]` | Historique des dictées, mise à jour automatique, lancement à l'ouverture de session |
 | `[corrections]` | `"mot mal reconnu" = "correction"`, appliqué au texte final |
 
 Modèles disponibles : `large-v3-turbo` (conseillé), `large-v3` (le plus précis,

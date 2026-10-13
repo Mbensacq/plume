@@ -46,6 +46,7 @@ argument (Windows seulement), ou la ligne de commande (`src/cli.rs`) avec
 │       ├── hooks.rs       raccourci global (crochets clavier et souris)
 │       ├── audio.rs       capture du micro (WASAPI)
 │       ├── output.rs      collage / frappe / presse-papiers
+│       ├── startup.rs     lancement à l'ouverture de session (clé « Run »)
 │       ├── ui.rs          icône près de l'horloge, indicateur, menu
 │       └── win.rs         petits utilitaires Win32
 ├── tests/e2e.rs         Test de bout en bout sur un extrait LibriVox en français
@@ -206,4 +207,5 @@ lancement d'après. En cas d'échec, l'ancienne version est remise en place.
 | Ajouter un modèle au catalogue | `src/models.rs` |
 | Changer l'icône, l'indicateur ou le menu | `src/app/ui.rs` |
 | Changer la façon d'écrire le texte | `src/app/output.rs` |
+| Changer le lancement à l'ouverture de session | `src/app/startup.rs` |
 | Changer la compilation Windows ou les Releases | `.github/workflows/ci.yml` |
