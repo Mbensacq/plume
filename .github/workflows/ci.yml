@@ -33,12 +33,20 @@ jobs:
   linux:
     name: Tests (Linux)
     runs-on: ubuntu-latest
+    env:
+      # whisper.cpp compilé pour une base commune (AVX2) et non pour le
+      # processeur exact du serveur : la compilation mise en cache est
+      # réutilisée sur des serveurs dont le processeur diffère (sinon
+      # « illegal instruction »).
+      GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2
       - name: Modèle de test (tiny) en cache
         uses: actions/cache@v6
         with:
