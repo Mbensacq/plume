@@ -11,10 +11,12 @@ use regex::{Regex, RegexBuilder};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-/// Amorce de style donnée à Whisper : un texte bien ponctué l'incite à
-/// ponctuer. Reprise de Plume 1, dont la ponctuation donnait satisfaction.
-pub const STYLE_PROMPT: &str = "Voici une transcription en français, soigneusement ponctuée. \
-Elle contient des virgules, des points, des points d'interrogation ? Et parfois des points d'exclamation !";
+/// Amorce de style donnée à Whisper, qui imite le texte qu'on lui montre : une
+/// phrase longue et ponctuée l'incite à mettre des virgules aux respirations et
+/// un point seulement en fin de phrase. Pas de « ! » : il en ajoutait partout.
+pub const STYLE_PROMPT: &str = "Voici la transcription d'une dictée en français, soigneusement ponctuée, \
+où chaque phrase va jusqu'au bout de son idée, avec des virgules là où l'on reprend son souffle, \
+et un point seulement à la fin. Tout est clair ? Oui, parfaitement.";
 
 /// Longueur maximale de texte précédent redonné à Whisper pour la continuité.
 const CONTEXT_CHARS: usize = 220;

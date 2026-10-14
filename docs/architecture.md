@@ -144,7 +144,8 @@ Avant chaque morceau, Whisper reçoit un texte d'amorce, dans cet ordre :
 
 1. `Vocabulaire : …` : les mots de `[transcription] vocabulaire`, dans la
    limite de 300 caractères (les premiers de la liste sont prioritaires) ;
-2. une phrase de style qui pousse Whisper à ponctuer ;
+2. une phrase de style, longue et ponctuée, que Whisper imite : des virgules
+   aux respirations, un point seulement en fin de phrase ;
 3. la fin du texte déjà dicté, **sans son point final**, pour que la suite
    enchaîne naturellement : Whisper décide lui-même si le morceau continue la
    phrase (il commence alors en minuscule) ou en commence une nouvelle.
