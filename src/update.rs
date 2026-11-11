@@ -111,10 +111,13 @@ pub fn install(release: &Release, exe: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Supprime la version précédente laissée par une mise à jour.
+/// Supprime la version précédente laissée par une mise à jour, et les restes
+/// d'un téléchargement interrompu par la fermeture de Plume.
 pub fn cleanup(exe: &Path) {
+    let new = with_suffix(exe, "new");
     let _ = fs::remove_file(with_suffix(exe, "old"));
-    let _ = fs::remove_file(with_suffix(exe, "new"));
+    let _ = fs::remove_file(new.with_extension("part"));
+    let _ = fs::remove_file(new);
 }
 
 fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
@@ -158,6 +161,43 @@ mod tests {
     fn ignores_prereleases() {
         let json = JSON.replace("\"prerelease\": false", "\"prerelease\": true");
         assert!(pick(&json, "2.0.0", "plume-windows-x64.exe").unwrap().is_none());
+    }
+
+    #[test]
+    fn install_swaps_the_executable_and_keeps_the_old_one_until_cleanup() {
+        let dir = std::env::temp_dir().join("plume-test-update");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("plume.exe");
+        fs::write(&exe, b"ancienne version").unwrap();
+        let new = b"nouvelle version de Plume".to_vec();
+        let url = models::test_server::serve_once(new.clone(), new.len());
+        let release = Release { version: "v9.9.9".into(), url, size: new.len() as u64 };
+        install(&release, &exe).unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), new);
+        assert_eq!(fs::read(with_suffix(&exe, "old")).unwrap(), b"ancienne version");
+        // Reste d'un téléchargement interrompu par la fermeture de Plume.
+        fs::write(dir.join("plume.exe.part"), b"moitie").unwrap();
+        cleanup(&exe);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "seul l'exécutable reste");
+        assert_eq!(fs::read(&exe).unwrap(), new, "le nettoyage ne touche pas à la version en place");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_download_leaves_the_current_executable_in_place() {
+        let dir = std::env::temp_dir().join("plume-test-update-echec");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("plume.exe");
+        fs::write(&exe, b"ancienne version").unwrap();
+        // Téléchargement coupé en route : 10 octets reçus sur 500 annoncés.
+        let url = models::test_server::serve_once(vec![0u8; 10], 500);
+        let release = Release { version: "v9.9.9".into(), url, size: 500 };
+        assert!(install(&release, &exe).is_err());
+        assert_eq!(fs::read(&exe).unwrap(), b"ancienne version");
+        assert!(!with_suffix(&exe, "old").exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
