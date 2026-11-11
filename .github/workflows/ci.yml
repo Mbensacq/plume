@@ -41,6 +41,16 @@ jobs:
       GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v7
+      - name: Le tag correspond à la version de Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Un exécutable publié sous un tag plus récent que sa propre version
+          # se remettrait à jour à chaque lancement, sans fin.
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::le tag $GITHUB_REF_NAME ne correspond pas à la version $version de Cargo.toml"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -96,6 +106,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.variant }}
@@ -113,6 +125,9 @@ jobs:
           "C:\VulkanSDK\$v\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Compiler
         run: cargo build --release --no-default-features --features ${{ matrix.features }}
+      # Le code de src/app/ n'existe que pour Windows : c'est ici qu'il est analysé.
+      - name: Clippy (code Windows)
+        run: cargo clippy --release --no-default-features --features ${{ matrix.features }} --all-targets -- -D warnings
       - name: Modèle de test (tiny) en cache
         uses: actions/cache@v6
         with:
