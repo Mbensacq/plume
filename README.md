@@ -43,6 +43,10 @@ Si Windows refuse de lancer Plume en signalant que `vulkan-1.dll` est
 introuvable (ordinateur sans pilote graphique : machine virtuelle, bureau à
 distance…), prends la variante `plume-windows-x64-cpu.exe`.
 
+Sur le processeur, choisis le modèle `small` dans `plume.toml` : mesuré sur
+4 cœurs, `large-v3-turbo` demande environ 2 s de calcul par seconde de parole
+(le texte prend du retard pendant que tu parles), `small` environ 0,6 s.
+
 ## Utilisation
 
 | Action | Effet |

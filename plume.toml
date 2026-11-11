@@ -31,6 +31,8 @@ annuler_avec_echap = true
 #   "large-v3"        3,1 Go  — le plus précis, plus lent (celui de Plume 1)
 #   "medium"          823 Mo  — "small" 264 Mo — "base" 148 Mo — "tiny" 78 Mo
 # On peut aussi donner le chemin complet d'un fichier .bin (format whisper.cpp).
+# Sans carte graphique utilisable (survole l'icône : « processeur »), choisis
+# "small" : les grands modèles y transcrivent moins vite que l'on ne parle.
 modele = "large-v3-turbo"
 
 # Langue parlée : "fr", "en", … ou "auto" pour la détecter à chaque morceau.
