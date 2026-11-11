@@ -135,7 +135,7 @@ impl Controller {
             Event::Engine(e) => self.on_engine(e),
             Event::DownloadStarted { model, megabytes } => {
                 self.ui.notify(
-                    "Premier lancement de Plume",
+                    "Plume télécharge son modèle",
                     format!("Téléchargement du modèle {model} ({megabytes} Mo). Tu peux déjà dicter : le texte arrivera dès qu'il sera prêt."),
                     false,
                 );
