@@ -75,7 +75,7 @@ pub fn ensure_model(source: &ModelSource) -> Result<()> {
             let mut last = 0;
             models::download(info, path, |done, total| {
                 let pct = (done * 100).checked_div(total).unwrap_or(0);
-                if pct >= last + 10 || pct == 100 {
+                if pct >= last + 10 || (pct == 100 && last < 100) {
                     eprintln!("  {pct} %");
                     last = pct;
                 }
@@ -147,10 +147,10 @@ fn transcribe(args: &[String]) -> Result<()> {
     if let Some(p) = a.precision {
         cfg.transcription.precision = p;
     }
+    // Le fichier d'abord : inutile de télécharger un modèle pour un fichier illisible.
+    let audio = audio_file::read_wav(&a.file)?;
     let source = ModelSource::resolve(&cfg.transcription.modele, &paths.models_dir())?;
     ensure_model(&source)?;
-
-    let audio = audio_file::read_wav(&a.file)?;
     let seconds = audio.samples.len() as f64 / audio.sample_rate as f64;
 
     let settings = EngineSettings {
@@ -199,7 +199,7 @@ fn transcribe(args: &[String]) -> Result<()> {
     let corrections = Corrections::from_map(&cfg.corrections);
     println!("{}", text::finalize(&r.text, &corrections));
     eprintln!(
-        "{:.1} s de son, {} morceaux, calcul {:.1} s ({:.2}× le temps réel), texte prêt {:.2} s après l'arrêt",
+        "{:.1} s de son, {} morceau(x), calcul {:.1} s ({:.2}× le temps réel), texte prêt {:.2} s après l'arrêt",
         seconds,
         chunks,
         r.compute.as_secs_f32(),
