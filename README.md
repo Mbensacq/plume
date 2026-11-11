@@ -36,8 +36,12 @@ l'éviter : `lancer_au_demarrage = false` dans `plume.toml` (section
 `[divers]`).
 
 Configuration requise : Windows 10 ou 11 (64 bits). Pour la carte graphique,
-un pilote à jour (NVIDIA, AMD ou Intel, via Vulkan). Sans carte graphique
-utilisable, Plume passe tout seul sur le processeur, en plus lent.
+un pilote à jour (NVIDIA, AMD ou Intel, via Vulkan). Si la carte graphique
+n'est pas utilisable, Plume passe tout seul sur le processeur, en plus lent.
+
+Si Windows refuse de lancer Plume en signalant que `vulkan-1.dll` est
+introuvable (ordinateur sans pilote graphique : machine virtuelle, bureau à
+distance…), prends la variante `plume-windows-x64-cpu.exe`.
 
 ## Utilisation
 
@@ -52,6 +56,8 @@ Raccourci par défaut : **Ctrl + Alt + Espace**.
 
 Couleur de l'icône : gris = chargement, violet = prêt, rouge = écoute,
 orange = transcription, rouge foncé = problème (survole-la pour le détail).
+Au survol, Plume indique aussi ce qui transcrit : le nom de la carte
+graphique, ou « processeur » (plus lent) si aucune carte n'est utilisable.
 
 L'indicateur en bas de l'écran affiche « Écoute 0:12 » puis
 « Transcription… ». Il ne prend jamais le focus : le texte va bien dans ta
@@ -61,7 +67,9 @@ fenêtre.
 
 Le fichier `plume.toml` est créé à côté de `plume.exe` au premier lancement,
 avec une explication pour chaque ligne. Après modification : clic sur l'icône,
-puis « Recharger les réglages ».
+puis « Recharger les réglages ». Une ligne que Plume ne comprend pas (faute de
+frappe, valeur impossible) est signalée et ignorée ; les autres réglages
+restent pris en compte.
 
 | Section | Ce qu'on y règle |
 |---|---|
