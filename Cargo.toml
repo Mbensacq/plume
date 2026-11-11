@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Dictée vocale locale (Whisper) déclenchée par un raccourci, texte collé au curseur."
 repository = "https://github.com/Mbensacq/plume"
+license = "MIT"
 publish = false
 
 # Le cœur (découpage, texte, moteur, configuration) est une bibliothèque

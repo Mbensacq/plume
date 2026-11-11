@@ -152,3 +152,9 @@ git clone https://github.com/Mbensacq/plume.git ~/plume && cd ~/plume
 cargo test --release
 cargo run --release -- --transcrire tests/data/librivox-fr-12s.wav --modele tiny
 ```
+
+## Licence
+
+Plume est distribué sous licence [MIT](LICENSE). Il s'appuie sur
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) et sur les modèles
+Whisper d'OpenAI, publiés eux aussi sous licence MIT.
