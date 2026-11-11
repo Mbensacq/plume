@@ -279,8 +279,8 @@ impl Config {
 fn decode(bytes: &[u8]) -> String {
     let utf16 = |units: &mut dyn Iterator<Item = u16>| String::from_utf16_lossy(&units.collect::<Vec<u16>>());
     match bytes {
-        [0xFF, 0xFE, rest @ ..] => utf16(&mut rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]))),
-        [0xFE, 0xFF, rest @ ..] => utf16(&mut rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]))),
+        [0xFF, 0xFE, rest @ ..] => utf16(&mut rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c))),
+        [0xFE, 0xFF, rest @ ..] => utf16(&mut rest.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c))),
         _ => match std::str::from_utf8(bytes) {
             Ok(text) => text.trim_start_matches('\u{feff}').to_string(),
             Err(_) => bytes.iter().map(|&b| windows_1252(b)).collect(),
