@@ -1,10 +1,11 @@
 [package]
 name = "plume"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Dictée vocale locale (Whisper) déclenchée par un raccourci, texte collé au curseur."
 repository = "https://github.com/Mbensacq/plume"
+license = "MIT"
 publish = false
 
 # Le cœur (découpage, texte, moteur, configuration) est une bibliothèque
@@ -38,7 +39,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.1.8"
 ureq = { version = "3.4.2", features = ["platform-verifier"] }
-whisper-rs = { version = "0.16.0", optional = true, features = ["log_backend"] }
+whisper-rs = { version = "0.16.0", optional = true, features = ["log_backend", "raw-api"] }
 
 [target.'cfg(windows)'.dependencies]
 arboard = "3.6.1"

@@ -227,10 +227,17 @@ pub fn finalize(text: &str, corrections: &Corrections) -> String {
     let s = corrections.apply(&s);
     let s = collapse_repetitions(&s);
     // Pas d'espace avant une virgule ou un point (on garde l'espace français
-    // avant ? ! : ; que Whisper produit déjà).
+    // avant ? ! : ; que Whisper produit déjà). Un point collé au mot suivant
+    // (« .NET », « .gitignore ») en fait partie : son espace reste.
     let mut out = String::with_capacity(s.len() + 1);
-    for c in s.chars() {
-        if matches!(c, ',' | '.' | ')') && out.ends_with(' ') {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        let glued = match c {
+            ',' | ')' => true,
+            '.' => !chars.peek().is_some_and(|next| next.is_alphanumeric()),
+            _ => false,
+        };
+        if glued && out.ends_with(' ') {
             out.pop();
         }
         out.push(c);
@@ -338,6 +345,17 @@ mod tests {
         assert_eq!(finalize("", &none), "");
         assert_eq!(finalize("   ", &none), "");
         assert_eq!(finalize("élan", &none), "Élan.");
+    }
+
+    #[test]
+    fn finalize_keeps_the_space_before_a_dotted_name() {
+        let none = Corrections::default();
+        assert_eq!(
+            finalize("j'utilise .NET et un fichier .gitignore", &none),
+            "J'utilise .NET et un fichier .gitignore."
+        );
+        assert_eq!(finalize("la version 3.5 est sortie .", &none), "La version 3.5 est sortie.");
+        assert_eq!(finalize("oui . Non .", &none), "Oui. Non.");
     }
 
     #[test]

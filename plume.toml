@@ -4,7 +4,8 @@
 #  Modifie ce fichier avec n'importe quel éditeur de texte, enregistre, puis
 #  clic droit sur l'icône de Plume (près de l'horloge) > « Recharger les réglages ».
 #  Une ligne qui commence par # est un commentaire : elle est ignorée.
-#  En cas d'erreur, Plume te le signale et garde les réglages par défaut.
+#  Une ligne que Plume ne comprend pas est signalée et ignorée (sa valeur par
+#  défaut est utilisée) ; les autres réglages sont pris en compte.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [raccourci]
@@ -30,6 +31,8 @@ annuler_avec_echap = true
 #   "large-v3"        3,1 Go  — le plus précis, plus lent (celui de Plume 1)
 #   "medium"          823 Mo  — "small" 264 Mo — "base" 148 Mo — "tiny" 78 Mo
 # On peut aussi donner le chemin complet d'un fichier .bin (format whisper.cpp).
+# Sans carte graphique utilisable (survole l'icône : « processeur »), choisis
+# "small" : les grands modèles y transcrivent moins vite que l'on ne parle.
 modele = "large-v3-turbo"
 
 # Langue parlée : "fr", "en", … ou "auto" pour la détecter à chaque morceau.

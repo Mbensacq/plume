@@ -135,7 +135,7 @@ impl Controller {
             Event::Engine(e) => self.on_engine(e),
             Event::DownloadStarted { model, megabytes } => {
                 self.ui.notify(
-                    "Premier lancement de Plume",
+                    "Plume télécharge son modèle",
                     format!("Téléchargement du modèle {model} ({megabytes} Mo). Tu peux déjà dicter : le texte arrivera dès qu'il sera prêt."),
                     false,
                 );
@@ -294,8 +294,8 @@ impl Controller {
     }
 
     fn reload(&mut self) {
-        let (new, warnings) = Config::load_or_create(&self.paths.config());
         let old = self.config();
+        let (new, warnings) = Config::reload(&self.paths.config(), &old);
         let hotkey = new.hotkey();
         self.hooks
             .update(HookSettings { hotkey: hotkey.clone(), cancel_with_escape: new.raccourci.annuler_avec_echap });

@@ -128,7 +128,10 @@ le nombre de morceaux et le délai après l'arrêt.
   `moteur` (processeur), `vulkan` (toute carte graphique récente), `cuda`
   (NVIDIA, non distribuée).
 - Au chargement : essai sur la carte graphique, **repli automatique sur le
-  processeur** en cas d'échec.
+  processeur** en cas d'échec. Plume demande d'abord au moteur quelle carte
+  il reconnaît (`gpu_device`) : sans carte utilisable, il charge directement
+  sur le processeur et l'annonce tel quel (journal, survol de l'icône,
+  `plume --version`), au lieu de laisser whisper.cpp s'y replier en silence.
 - `precision` (1 à 8) = largeur du faisceau de recherche (1 = glouton, le plus
   rapide).
 - Température 0, avec relance à température plus haute si le résultat est
@@ -182,9 +185,20 @@ de Plume les ignorent.
 ## Réglages (`config.rs`)
 
 `plume.toml` est lu avec `serde` et `toml`. Une clé inconnue ou une valeur
-invalide ne bloque jamais le démarrage : la valeur par défaut est utilisée et
-un avertissement en français s'affiche. Le modèle commenté `plume.toml` est
-intégré à l'exécutable (`include_str!`) et écrit au premier lancement.
+invalide ne bloque jamais le démarrage : seule la ligne concernée reprend sa
+valeur par défaut (chaque clé est essayée séparément, voir `from_table`), les
+autres réglages sont gardés, et un avertissement en français s'affiche. Le
+modèle commenté `plume.toml` est intégré à l'exécutable (`include_str!`) et
+écrit au premier lancement.
+
+| Situation | Au démarrage | À « Recharger les réglages » |
+|---|---|---|
+| Clé inconnue, valeur refusée | Ligne ignorée, avertissement | Ligne ignorée, avertissement |
+| Fichier illisible (guillemet oublié…) | Réglages par défaut, avertissement | Réglages en cours **conservés**, avertissement |
+
+Le fichier peut être enregistré en UTF-8 (avec ou sans BOM), en UTF-16
+(« Unicode » du Bloc-notes) ou en « ANSI » (Windows-1252) : voir `decode`.
+La langue doit être un code connu de Whisper (`LANGUAGES`) ou `auto`.
 
 ## Mise à jour automatique (`update.rs`)
 

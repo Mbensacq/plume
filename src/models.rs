@@ -102,6 +102,17 @@ pub fn download_url(url: &str, dest: &Path, expected: Option<u64>, progress: &mu
         fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
     }
     let part = dest.with_extension("part");
+    let result = fetch(url, &part, expected, progress)
+        .and_then(|()| fs::rename(&part, dest).with_context(|| format!("renommage vers {}", dest.display())));
+    if result.is_err() {
+        // Un téléchargement raté ne laisse pas des gigaoctets inutilisables sur le disque.
+        let _ = fs::remove_file(&part);
+    }
+    result
+}
+
+/// Télécharge `url` dans `part` et vérifie que le fichier est complet.
+fn fetch(url: &str, part: &Path, expected: Option<u64>, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
     let agent = http_agent();
     let mut resp = agent.get(url).call().with_context(|| format!("connexion à {url}"))?;
     let total = resp
@@ -117,7 +128,7 @@ pub fn download_url(url: &str, dest: &Path, expected: Option<u64>, progress: &mu
         bail!("taille inattendue pour {url} : {total} octets au lieu de {exp}");
     }
     let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
-    let mut file = File::create(&part).with_context(|| format!("création de {}", part.display()))?;
+    let mut file = File::create(part).with_context(|| format!("création de {}", part.display()))?;
     let mut buf = vec![0u8; 1 << 20];
     let mut received: u64 = 0;
     let mut last_report = 0u64;
@@ -136,17 +147,87 @@ pub fn download_url(url: &str, dest: &Path, expected: Option<u64>, progress: &mu
     file.sync_all().ok();
     drop(file);
     if total > 0 && received != total {
-        let _ = fs::remove_file(&part);
         bail!("téléchargement incomplet : {received} octets sur {total}");
     }
     progress(received, total.max(received));
-    fs::rename(&part, dest).with_context(|| format!("renommage vers {}", dest.display()))?;
     Ok(())
+}
+
+/// Petit serveur HTTP local pour les tests de téléchargement.
+#[cfg(test)]
+pub(crate) mod test_server {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Sert une seule requête : annonce `declared` octets, envoie `body`, puis
+    /// ferme la connexion. Renvoie l'adresse à interroger.
+    pub fn serve_once(body: Vec<u8>, declared: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("port local");
+        let url = format!("http://{}/fichier.bin", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            // Lit la requête jusqu'à la ligne vide.
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                request.push(byte[0]);
+            }
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        url
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn downloads_to_destination_and_reports_progress() {
+        let dir = temp_dir("plume-test-download-ok");
+        let dest = dir.join("sous-dossier").join("modele.bin");
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let url = test_server::serve_once(body.clone(), body.len());
+        let mut reports = Vec::new();
+        download_url(&url, &dest, Some(body.len() as u64), &mut |done, total| reports.push((done, total))).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), body);
+        assert!(!dest.with_extension("part").exists(), "le fichier temporaire est renommé");
+        assert_eq!(reports.last(), Some(&(body.len() as u64, body.len() as u64)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interrupted_download_leaves_no_model() {
+        let dir = temp_dir("plume-test-download-cut");
+        let dest = dir.join("modele.bin");
+        // Le serveur annonce 1 000 octets et coupe après 400.
+        let url = test_server::serve_once(vec![7u8; 400], 1_000);
+        let e = download_url(&url, &dest, Some(1_000), &mut |_, _| {}).unwrap_err();
+        assert!(!dest.exists(), "aucun fichier abîmé ne doit rester : {e:#}");
+        assert!(!dest.with_extension("part").exists(), "ni de fichier temporaire");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unexpected_size_is_refused_before_writing() {
+        let dir = temp_dir("plume-test-download-size");
+        let dest = dir.join("modele.bin");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&dest, b"ancien").unwrap();
+        let url = test_server::serve_once(vec![1u8; 50], 50);
+        let e = download_url(&url, &dest, Some(60), &mut |_, _| {}).unwrap_err();
+        assert!(format!("{e:#}").contains("taille inattendue"), "{e:#}");
+        assert_eq!(fs::read(&dest).unwrap(), b"ancien", "le fichier en place n'est pas touché");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn resolves_catalog_names_and_paths() {

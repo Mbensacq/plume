@@ -89,7 +89,8 @@ pub struct UiState {
     pub engine_ready: bool,
     pub download: Option<u32>,
     pub flash: Option<Flash>,
-    pub balloon: Option<Balloon>,
+    /// Notifications en attente d'affichage, dans l'ordre d'arrivée.
+    pub balloons: Vec<Balloon>,
     pub indicator: bool,
     pub position: IndicatorPosition,
 }
@@ -142,7 +143,9 @@ impl UiHandle {
 
     pub fn notify(&self, title: impl Into<String>, text: impl Into<String>, warning: bool) {
         let (title, text) = (title.into(), text.into());
-        self.update(|s| s.balloon = Some(Balloon { title, text, warning }));
+        // En file : deux notifications rapprochées (accueil puis téléchargement
+        // du modèle, au premier lancement) ne s'écrasent pas l'une l'autre.
+        self.update(|s| s.balloons.push(Balloon { title, text, warning }));
     }
 
     /// Ferme Plume (la boucle de messages s'arrête).
@@ -378,7 +381,8 @@ fn tooltip(s: &UiState) -> String {
             Some(p) => format!("téléchargement du modèle : {p} %"),
             None => "chargement du modèle…".into(),
         },
-        Phase::Ready => format!("prêt ({})", s.hotkey),
+        Phase::Ready if s.detail.is_empty() => format!("prêt ({})", s.hotkey),
+        Phase::Ready => format!("prêt ({}) · {}", s.hotkey, s.detail),
         Phase::Recording => "écoute…".into(),
         Phase::Transcribing => "transcription…".into(),
         Phase::Failed => format!("problème : {}", s.detail),
@@ -391,12 +395,12 @@ fn tooltip(s: &UiState) -> String {
 fn refresh() {
     let Some(ui) = UI.get() else { return };
     let hwnd = ui.hwnd.load(Ordering::SeqCst) as HWND;
-    let (state, balloon) = {
+    let (state, balloons) = {
         let Ok(mut s) = ui.state.lock() else { return };
         if s.flash.as_ref().is_some_and(|f| Instant::now() >= f.until) {
             s.flash = None;
         }
-        let b = s.balloon.take();
+        let b = std::mem::take(&mut s.balloons);
         (s.clone(), b)
     };
 
@@ -409,20 +413,27 @@ fn refresh() {
         *last = now;
         changed
     });
-    if tray_changed || balloon.is_some() {
+    if tray_changed || !balloons.is_empty() {
         let mut nid = tray_data(hwnd);
         nid.uFlags = NIF_ICON | NIF_TIP;
         nid.hIcon = icon_for(state.phase);
         fill_wide(&mut nid.szTip, &tip);
-        if let Some(b) = &balloon {
+        if balloons.is_empty() {
+            // SAFETY: structure valide.
+            unsafe {
+                Shell_NotifyIconW(NIM_MODIFY, &nid);
+            }
+        }
+        // Une demande par notification : Windows les affiche à la suite.
+        for b in &balloons {
             nid.uFlags |= NIF_INFO;
             fill_wide(&mut nid.szInfoTitle, &b.title);
             fill_wide(&mut nid.szInfo, &b.text);
             nid.dwInfoFlags = if b.warning { NIIF_WARNING } else { NIIF_INFO };
-        }
-        // SAFETY: structure valide.
-        unsafe {
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
+            // SAFETY: structure valide.
+            unsafe {
+                Shell_NotifyIconW(NIM_MODIFY, &nid);
+            }
         }
     }
 

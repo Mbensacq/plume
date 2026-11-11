@@ -41,7 +41,7 @@ source "$HOME/.cargo/env"
 rustup component add clippy rustfmt
 ```
 
-Version minimale : Rust 1.85 (édition 2024). `rustup update` met à jour.
+Version minimale : Rust 1.88. `rustup update` met à jour.
 
 ### 3. Le dépôt
 
@@ -91,7 +91,7 @@ lente.
 | `cargo run --release -- --aide` | Aide de la ligne de commande |
 | `cargo run --release -- --transcrire FICHIER.wav` | Transcrire un fichier avec exactement le traitement d'une dictée |
 | `cargo run --release -- --transcrire FICHIER.wav --temps-reel` | Simuler une dictée en direct et mesurer le délai après l'arrêt |
-| `cargo run --release -- --version` | Version, version de whisper.cpp, capacités du processeur |
+| `cargo run --release -- --version` | Version, version de whisper.cpp, capacités du processeur, carte graphique reconnue |
 
 Options de `--transcrire` : `--modele NOM`, `--precision 1..8`,
 `--processeur` (sans carte graphique). Sous WSL, le moteur tourne sur le
@@ -169,7 +169,8 @@ fabriqué par la CI.
    `plume.exe` par le nouveau, relance.
 
 La CI vérifie aussi que l'exécutable démarre et transcrit un vrai extrait en
-français avant de le proposer.
+français avant de le proposer, et passe clippy sur le code Windows
+(`src/app/`), que la tâche Linux ne compile pas.
 
 ### Compiler sous Windows
 
@@ -247,6 +248,11 @@ exécutable, qui devient actif au lancement d'après.
    ```
 
 4. La CI compile, teste et crée la Release avec les deux exécutables.
+
+Le tag doit porter exactement la version de `Cargo.toml` (`v2.0.1` pour
+`version = "2.0.1"`) : la CI refuse de publier sinon. Un exécutable publié
+sous un tag plus récent que sa propre version se croirait toujours en retard
+et se remettrait à jour à chaque lancement.
 
 Les versions sont comparées numériquement (`v2.10.0` > `v2.9.9`). Une
 version marquée « pre-release » sur GitHub est ignorée par la mise à jour

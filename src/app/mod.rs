@@ -155,7 +155,7 @@ pub fn run(at_startup: bool) -> i32 {
         engine_ready: false,
         download: None,
         flash: None,
-        balloon: None,
+        balloons: Vec::new(),
         indicator: cfg.interface.indicateur,
         position: cfg.interface.position,
     };
