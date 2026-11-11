@@ -4,7 +4,8 @@
 #  Modifie ce fichier avec n'importe quel éditeur de texte, enregistre, puis
 #  clic droit sur l'icône de Plume (près de l'horloge) > « Recharger les réglages ».
 #  Une ligne qui commence par # est un commentaire : elle est ignorée.
-#  En cas d'erreur, Plume te le signale et garde les réglages par défaut.
+#  Une ligne que Plume ne comprend pas est signalée et ignorée (sa valeur par
+#  défaut est utilisée) ; les autres réglages sont pris en compte.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [raccourci]

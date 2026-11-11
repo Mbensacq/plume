@@ -294,8 +294,8 @@ impl Controller {
     }
 
     fn reload(&mut self) {
-        let (new, warnings) = Config::load_or_create(&self.paths.config());
         let old = self.config();
+        let (new, warnings) = Config::reload(&self.paths.config(), &old);
         let hotkey = new.hotkey();
         self.hooks
             .update(HookSettings { hotkey: hotkey.clone(), cancel_with_escape: new.raccourci.annuler_avec_echap });
